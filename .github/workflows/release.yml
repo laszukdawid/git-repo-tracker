@@ -1,0 +1,78 @@
+# Builds release artifacts on a version tag:
+#   - macOS (arm64 + amd64) via GoReleaser, plus a Homebrew cask update.
+#   - Linux (amd64) archive, uploaded to the same GitHub release.
+#
+# macOS must build on a macOS runner because Fyne is a CGO app (no Linux
+# cross-compile); the amd64 slice is cross-built via `clang -arch x86_64`
+# (see .goreleaser.yaml). Linux likewise needs its own CGO build with GL/X11 dev
+# libraries, so it runs as a separate job on ubuntu.
+#
+# Required secret:
+#   HOMEBREW_TAP_GITHUB_TOKEN — PAT with `repo` scope on laszukdawid/homebrew-tap
+#                               so GoReleaser can commit the updated cask.
+# GITHUB_TOKEN is provided automatically (creates the release, uploads assets).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+  linux:
+    needs: goreleaser # upload into the release GoReleaser just created
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Fyne build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+      - name: Build Linux amd64 binary
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o git-repo-tracker .
+          tar -czf "git-repo-tracker_Linux_x86_64.tar.gz" git-repo-tracker README.md LICENSE config.example.yaml
+
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" git-repo-tracker_Linux_x86_64.tar.gz --clobber

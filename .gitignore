@@ -1,0 +1,7 @@
+# Build artifacts
+/git-repo-tracker
+*.app/
+dist/
+
+# Local config/cache that might leak into the tree during development
+*.tmp

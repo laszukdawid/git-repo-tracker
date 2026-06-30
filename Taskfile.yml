@@ -1,0 +1,83 @@
+version: '3'
+
+vars:
+  APP_NAME: Git Repo Tracker
+  BIN: git-repo-tracker
+  APP_ID: com.github.dawidlaszuk.git-repo-tracker
+  TAP: laszukdawid/tap
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Compile the binary
+    cmds:
+      - go build -o {{.BIN}} .
+
+  run:
+    desc: Build and run directly (useful while developing)
+    cmds:
+      - go run .
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  fmt:
+    desc: Format all Go files
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  check:
+    desc: Format, vet and test
+    deps: [fmt, vet, test]
+
+  icon:
+    desc: Regenerate icon.png from the embedded SVG via Fyne's software renderer
+    cmds:
+      - go run ./internal/assets/gen
+
+  install-fyne:
+    desc: Install the Fyne packaging CLI (one-time)
+    cmds:
+      - go install fyne.io/tools/cmd/fyne@latest
+
+  bundle:
+    desc: 'Produce a macOS .app bundle (run `task install-fyne` first; needs icon.png)'
+    cmds:
+      - fyne package -os darwin --name "{{.APP_NAME}}" --app-id {{.APP_ID}} --icon icon.png
+
+  linux-deps:
+    desc: 'Install the Fyne build dependencies on Debian/Ubuntu'
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev libxkbcommon-dev
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf {{.BIN}} "{{.APP_NAME}}.app" dist
+
+  release-check:
+    desc: Validate the GoReleaser config
+    cmds:
+      - goreleaser check
+
+  release-snapshot:
+    desc: 'Build a local release into ./dist without publishing (validates the build, incl. CGO)'
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  brew-install:
+    desc: 'Install the prebuilt binary from the tap'
+    cmds:
+      - 'brew install --cask {{.TAP}}/{{.BIN}}'

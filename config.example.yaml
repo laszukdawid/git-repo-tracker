@@ -1,0 +1,43 @@
+# git-repo-tracker configuration.
+#
+# Location:
+#   macOS: ~/Library/Application Support/git-repo-tracker/config.yaml
+#   Linux: ~/.config/git-repo-tracker/config.yaml
+# Override the path with the GIT_REPO_TRACKER_CONFIG environment variable.
+#
+# This file holds your intent (which directories to scan and how). The list of
+# discovered repositories and their last-known status is kept separately in a
+# disposable cache, so the tray can paint instantly on launch.
+
+# Directories to scan for git repositories (recursively).
+roots:
+  - path: ~/projects   # ~ is expanded to your home directory
+    depth: 5           # max sub-directory depth to descend (0 = unlimited)
+    autoFetch: true    # run `git fetch` in the background for repos under this root
+
+# Directory names pruned during discovery (never descended into).
+ignore:
+  - node_modules
+  - vendor
+  - .Trash
+  - .cache
+
+# How often to run `git fetch` for each repo to learn about remote changes.
+# Fetch only updates remote-tracking refs; your working tree is never touched.
+fetchIntervalMinutes: 30
+
+# How often to refresh cheap local status (branch, ahead/behind, dirty state).
+localRefreshSeconds: 30
+
+# What happens when you click a repo row.
+#   open-folder : reveal the directory in the OS file manager (default)
+#   terminal    : open a terminal in the directory
+#   editor      : open the directory in your editor
+#   custom      : run customCommand below
+clickAction: open-folder
+
+# Used when clickAction is "custom". {path} is replaced with the repo path.
+customCommand: ""   # e.g. "code {path}"
+
+# Start the app automatically when you log in (macOS LaunchAgent / Linux autostart).
+launchAtLogin: false
