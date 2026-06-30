@@ -46,6 +46,16 @@ tasks:
     cmds:
       - go run ./internal/assets/gen
 
+  docs:
+    desc: 'Serve the docs with MkDocs at http://localhost:8000 (Ctrl-C to stop)'
+    cmds:
+      - uvx --with mkdocs-material mkdocs serve
+
+  docs-build:
+    desc: 'Build the static docs site into ./site'
+    cmds:
+      - uvx --with mkdocs-material mkdocs build --strict
+
   install-fyne:
     desc: Install the Fyne packaging CLI (one-time)
     cmds:

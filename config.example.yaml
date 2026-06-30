@@ -21,6 +21,7 @@ ignore:
   - vendor
   - .Trash
   - .cache
+  - Library
 
 # How often to run `git fetch` for each repo to learn about remote changes.
 # Fetch only updates remote-tracking refs; your working tree is never touched.

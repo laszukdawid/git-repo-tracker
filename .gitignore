@@ -5,3 +5,9 @@ dist/
 
 # Local config/cache that might leak into the tree during development
 *.tmp
+
+# Source screen recordings; the exported demo (docs/media/demo.gif) is committed.
+*.mov
+
+# MkDocs build output
+/site/
