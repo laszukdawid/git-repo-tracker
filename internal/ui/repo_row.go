@@ -14,12 +14,6 @@ import (
 	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
 )
 
-var (
-	rowHoverColor  = color.NRGBA{R: 255, G: 255, B: 255, A: 14}
-	btnHoverColor  = color.NRGBA{R: 255, G: 255, B: 255, A: 38}
-	detailKeyColor = color.NRGBA{R: 210, G: 216, B: 226, A: 255}
-)
-
 const rightReserve = 70 // space kept on the title's right edge for the action icons
 
 // iconButton is a minimal tappable icon with its own hover highlight. It is NOT
@@ -30,12 +24,13 @@ type iconButton struct {
 	widget.BaseWidget
 	res     fyne.Resource
 	tip     string
+	hover   color.Color
 	onTap   func()
 	hovered bool
 }
 
-func newIconButton(res fyne.Resource, tip string, onTap func()) *iconButton {
-	b := &iconButton{res: res, tip: tip, onTap: onTap}
+func newIconButton(res fyne.Resource, tip string, hover color.Color, onTap func()) *iconButton {
+	b := &iconButton{res: res, tip: tip, hover: hover, onTap: onTap}
 	b.ExtendBaseWidget(b)
 	return b
 }
@@ -77,7 +72,7 @@ func (r *iconButtonRenderer) Layout(size fyne.Size) {
 func (r *iconButtonRenderer) MinSize() fyne.Size { return fyne.NewSize(26, 26) }
 func (r *iconButtonRenderer) Refresh() {
 	if r.b.hovered {
-		r.bg.FillColor = btnHoverColor
+		r.bg.FillColor = r.b.hover
 	} else {
 		r.bg.FillColor = color.Transparent
 	}
@@ -93,6 +88,7 @@ func (r *iconButtonRenderer) Destroy()                     {}
 type repoRow struct {
 	widget.BaseWidget
 
+	pal      palette
 	repo     monitor.RepoState
 	expanded bool
 	pulling  bool
@@ -114,21 +110,21 @@ type repoRow struct {
 	onOpen   func(monitor.RepoState)
 }
 
-func newRepoRow(tips *tooltipLayer) *repoRow {
-	r := &repoRow{tips: tips}
-	r.name = canvas.NewText("", rowNameColor)
+func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
+	r := &repoRow{tips: tips, pal: pal}
+	r.name = canvas.NewText("", pal.rowName)
 	r.name.TextStyle = fyne.TextStyle{Bold: true}
 	r.name.TextSize = 14
-	r.sub = canvas.NewText("", rowSubColor)
+	r.sub = canvas.NewText("", pal.rowSub)
 	r.sub.TextStyle = fyne.TextStyle{Monospace: true}
 	r.sub.TextSize = 12
 
-	r.pullBtn = newIconButton(theme.DownloadIcon(), "Pull (fast-forward)", func() {
+	r.pullBtn = newIconButton(theme.DownloadIcon(), "Pull (fast-forward)", pal.btnHover, func() {
 		if r.onPull != nil {
 			r.onPull(r.repo)
 		}
 	})
-	r.openBtn = newIconButton(theme.FolderOpenIcon(), "Open folder", func() {
+	r.openBtn = newIconButton(theme.FolderOpenIcon(), "Open folder", pal.btnHover, func() {
 		if r.onOpen != nil {
 			r.onOpen(r.repo)
 		}
@@ -182,7 +178,7 @@ func (r *repoRow) rebuildDetail(d *monitor.Details) {
 	r.clearMarquees()
 	r.detailBox.RemoveAll()
 	if d == nil {
-		r.detailBox.Add(r.line("Loading…", rowSubColor, 12, false, false, false))
+		r.detailBox.Add(r.line("Loading…", r.pal.rowSub, 12, false, false, false))
 		r.detailBox.Refresh()
 		return
 	}
@@ -192,10 +188,10 @@ func (r *repoRow) rebuildDetail(d *monitor.Details) {
 	}
 	// Path needs no label; commit message gets its own line (it can be long, and
 	// scrolls on hover). Long lines truncate to fit otherwise.
-	r.detailBox.Add(r.line(d.Path, rowSubColor, 12, false, true, true))
-	r.detailBox.Add(r.line("Local "+branch, detailKeyColor, 12, true, false, false))
+	r.detailBox.Add(r.line(d.Path, r.pal.rowSub, 12, false, true, true))
+	r.detailBox.Add(r.line("Local "+branch, r.pal.detailKey, 12, true, false, false))
 	r.addCommit(d.LocalHash, d.LocalTime, d.LocalMsg)
-	r.detailBox.Add(r.line("Origin "+d.OriginRef, detailKeyColor, 12, true, false, false))
+	r.detailBox.Add(r.line("Origin "+d.OriginRef, r.pal.detailKey, 12, true, false, false))
 	r.addCommit(d.OriginHash, d.OriginTime, d.OriginMsg)
 
 	if r.hovered { // already hovered when (re)built: scroll right away
@@ -208,12 +204,12 @@ func (r *repoRow) rebuildDetail(d *monitor.Details) {
 
 func (r *repoRow) addCommit(hash string, t time.Time, msg string) {
 	if hash == "" {
-		r.detailBox.Add(r.line("—", rowSubColor, 11, false, true, false))
+		r.detailBox.Add(r.line("—", r.pal.rowSub, 11, false, true, false))
 		return
 	}
-	r.detailBox.Add(r.line(commitMeta(hash, t), rowSubColor, 11, false, true, false))
+	r.detailBox.Add(r.line(commitMeta(hash, t), r.pal.rowSub, 11, false, true, false))
 	if msg != "" {
-		r.detailBox.Add(r.line(msg, rowSubColor, 11, false, true, true))
+		r.detailBox.Add(r.line(msg, r.pal.rowSub, 11, false, true, true))
 	}
 }
 
@@ -364,7 +360,7 @@ func (rr *repoRowRenderer) MinSize() fyne.Size {
 
 func (rr *repoRowRenderer) Refresh() {
 	if rr.row.hovered {
-		rr.bg.FillColor = rowHoverColor
+		rr.bg.FillColor = rr.row.pal.rowHover
 	} else {
 		rr.bg.FillColor = color.Transparent
 	}

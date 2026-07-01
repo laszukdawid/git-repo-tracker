@@ -7,5 +7,9 @@ package ui
 // unreliable, so we accept the default placement.
 func placePopover(title string, width, height float32) {}
 
+// resizePopover is a no-op off macOS; the Fyne-level Resize already adjusts the
+// window, and native top-anchored resizing isn't available here.
+func resizePopover(title string, width, height float32) {}
+
 // watchPopoverAutoHide is a no-op off macOS.
 func watchPopoverAutoHide(hide func()) {}

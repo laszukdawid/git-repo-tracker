@@ -24,6 +24,14 @@ const (
 	ActionCustom     = "custom"
 )
 
+// Theme appearance modes. "system" follows the OS light/dark setting; the others
+// force a fixed appearance regardless of the OS.
+const (
+	ThemeSystem = "system"
+	ThemeLight  = "light"
+	ThemeDark   = "dark"
+)
+
 // Defaults applied when the config omits a value or carries a nonsensical one.
 const (
 	defaultFetchMinutes = 30
@@ -53,6 +61,7 @@ type Config struct {
 	ClickAction          string   `yaml:"clickAction"`
 	CustomCommand        string   `yaml:"customCommand"`
 	LaunchAtLogin        bool     `yaml:"launchAtLogin"`
+	Theme                string   `yaml:"theme"` // system | light | dark
 
 	path string
 	mu   sync.Mutex
@@ -119,6 +128,12 @@ func (c *Config) normalize() {
 	if strings.TrimSpace(c.ClickAction) == "" {
 		c.ClickAction = ActionOpenFolder
 	}
+	switch c.Theme {
+	case ThemeLight, ThemeDark, ThemeSystem:
+		// valid
+	default:
+		c.Theme = ThemeSystem
+	}
 	for i := range c.Roots {
 		if c.Roots[i].Depth < 0 {
 			c.Roots[i].Depth = 0
@@ -173,6 +188,23 @@ func (c *Config) LaunchAtLoginEnabled() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.LaunchAtLogin
+}
+
+// ThemeMode returns the configured appearance (one of ThemeSystem/Light/Dark).
+func (c *Config) ThemeMode() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Theme
+}
+
+// SetThemeMode updates the appearance mode and persists it.
+func (c *Config) SetThemeMode(mode string) error {
+	switch mode {
+	case ThemeLight, ThemeDark, ThemeSystem:
+	default:
+		mode = ThemeSystem
+	}
+	return c.update(func() { c.Theme = mode })
 }
 
 // Save applies a batch of settings atomically: it persists in one write and, on
@@ -230,6 +262,7 @@ type persisted struct {
 	clickAction          string
 	customCommand        string
 	launchAtLogin        bool
+	theme                string
 }
 
 func (c *Config) snapshot() persisted {
@@ -241,6 +274,7 @@ func (c *Config) snapshot() persisted {
 		clickAction:          c.ClickAction,
 		customCommand:        c.CustomCommand,
 		launchAtLogin:        c.LaunchAtLogin,
+		theme:                c.Theme,
 	}
 }
 
@@ -249,6 +283,7 @@ func (c *Config) restore(p persisted) {
 	c.FetchIntervalMinutes, c.LocalRefreshSeconds = p.fetchIntervalMinutes, p.localRefreshSeconds
 	c.ClickAction, c.CustomCommand = p.clickAction, p.customCommand
 	c.LaunchAtLogin = p.launchAtLogin
+	c.Theme = p.theme
 }
 
 // Reload re-reads the backing file and replaces the in-memory values in place,
@@ -267,6 +302,7 @@ func (c *Config) Reload() error {
 	c.ClickAction = fresh.ClickAction
 	c.CustomCommand = fresh.CustomCommand
 	c.LaunchAtLogin = fresh.LaunchAtLogin
+	c.Theme = fresh.Theme
 	c.mu.Unlock()
 	return nil
 }

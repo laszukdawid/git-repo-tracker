@@ -75,6 +75,24 @@ static void GRTPlacePopover(const char *title, double width, double height) {
 	});
 }
 
+// GRTResizePopover changes the popover's height (and width) while keeping its
+// top-left corner fixed, so it grows/shrinks downward from just below the menu
+// bar. Unlike GRTPlacePopover it never reads the cursor, so it can run while the
+// user types in the search field without the window hopping to the pointer.
+static void GRTResizePopover(const char *title, double width, double height) {
+	NSString *needle = [[NSString alloc] initWithUTF8String:title];
+	dispatch_async(dispatch_get_main_queue(), ^{
+		NSWindow *win = GRTFindWindow(needle);
+		if (win == nil) {
+			return;
+		}
+		NSRect f = [win frame];
+		double top = NSMaxY(f);     // current top edge (origin is bottom-left)
+		double y = top - height;    // keep the top fixed; extend/retract the bottom
+		[win setFrame:NSMakeRect(f.origin.x, y, width, height) display:YES animate:NO];
+	});
+}
+
 // GRTApplyVibrancy is best-effort macOS blur. It often won't show through Fyne's
 // opaque GL canvas, so it is gated behind an env var rather than enabled by default.
 static void GRTApplyVibrancy(const char *title) {
@@ -140,6 +158,14 @@ func placePopover(title string, width, height float32) {
 	if os.Getenv("GRT_VIBRANCY") == "1" {
 		C.GRTApplyVibrancy(c)
 	}
+}
+
+// resizePopover changes the already-open popover's size while keeping its top-left
+// corner anchored (it does not re-position to the cursor).
+func resizePopover(title string, width, height float32) {
+	c := C.CString(title)
+	defer C.free(unsafe.Pointer(c))
+	C.GRTResizePopover(c, C.double(width), C.double(height))
 }
 
 // popoverAutoHide is invoked (on the main thread) when the app resigns active,

@@ -21,7 +21,7 @@ import (
 func (a *App) showSettings() {
 	w := a.fyneApp.NewWindow("git-repo-tracker — Settings")
 	w.Resize(fyne.NewSize(560, 470))
-	tips := newTooltipLayer()
+	tips := newTooltipLayer(a.pal)
 
 	// Work on a copy of the roots; commit only on Save.
 	roots := a.cfg.RootList()
@@ -90,6 +90,16 @@ func (a *App) showSettings() {
 	)
 	actionSelect.SetSelected(action) // fires OnChanged → sets customForm visibility
 
+	// Appearance: System follows the OS; Light/Dark force a fixed look.
+	themeLabels := map[string]string{
+		config.ThemeSystem: "System", config.ThemeLight: "Light", config.ThemeDark: "Dark",
+	}
+	themeValues := map[string]string{
+		"System": config.ThemeSystem, "Light": config.ThemeLight, "Dark": config.ThemeDark,
+	}
+	themeSelect := widget.NewSelect([]string{"System", "Light", "Dark"}, nil)
+	themeSelect.SetSelected(themeLabels[a.cfg.ThemeMode()])
+
 	// Launch at login (reflect the actual on-disk state, not just config).
 	launch := widget.NewCheck("Start git-repo-tracker at login", nil)
 	launch.SetChecked(loginitem.Enabled())
@@ -98,6 +108,7 @@ func (a *App) showSettings() {
 		widget.NewFormItem("Fetch every (min)", fetchMin),
 		widget.NewFormItem("Local refresh (s)", localSec),
 		widget.NewFormItem("Open with", actionSelect),
+		widget.NewFormItem("Theme", themeSelect),
 	)
 
 	save := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), func() {
@@ -126,6 +137,16 @@ func (a *App) showSettings() {
 			dialog.ShowError(err, w)
 			return
 		}
+		mode := themeValues[themeSelect.Selected]
+		if mode == "" {
+			mode = config.ThemeSystem
+		}
+		if err := a.cfg.SetThemeMode(mode); err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
+		a.applyTheme()          // install the chosen variant as the Fyne theme
+		a.buildPopoverContent() // repaint the popover's custom colours for it
 
 		a.mgr.Refresh()
 		a.refresh()

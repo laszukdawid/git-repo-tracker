@@ -61,6 +61,59 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestThemeDefaultsToSystem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("roots: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ThemeMode() != ThemeSystem {
+		t.Errorf("theme = %q, want %q", c.ThemeMode(), ThemeSystem)
+	}
+}
+
+func TestThemeNormalizesInvalid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("theme: neon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ThemeMode() != ThemeSystem {
+		t.Errorf("invalid theme = %q, want fallback %q", c.ThemeMode(), ThemeSystem)
+	}
+}
+
+func TestSetThemeModeRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetThemeMode(ThemeLight); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ThemeMode() != ThemeLight {
+		t.Errorf("theme not persisted: %q", reloaded.ThemeMode())
+	}
+	// An unknown mode is coerced to the system default rather than persisted as-is.
+	if err := c.SetThemeMode("bogus"); err != nil {
+		t.Fatal(err)
+	}
+	if c.ThemeMode() != ThemeSystem {
+		t.Errorf("bogus mode = %q, want %q", c.ThemeMode(), ThemeSystem)
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	if got := ExpandPath("~"); got != home {

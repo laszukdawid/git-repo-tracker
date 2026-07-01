@@ -1,19 +1,11 @@
 package ui
 
 import (
-	"image/color"
-
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
-)
-
-var (
-	tipBgColor     = color.NRGBA{R: 38, G: 42, B: 51, A: 250}
-	tipBorderColor = color.NRGBA{R: 255, G: 255, B: 255, A: 40}
-	tipTextColor   = color.NRGBA{R: 230, G: 235, B: 242, A: 255}
 )
 
 // tooltipLayer is a non-intercepting overlay placed on top of a window's content
@@ -25,13 +17,13 @@ type tooltipLayer struct {
 	text *canvas.Text
 }
 
-func newTooltipLayer() *tooltipLayer {
+func newTooltipLayer(pal palette) *tooltipLayer {
 	t := &tooltipLayer{}
-	t.bg = canvas.NewRectangle(tipBgColor)
-	t.bg.StrokeColor = tipBorderColor
+	t.bg = canvas.NewRectangle(pal.tipBg)
+	t.bg.StrokeColor = pal.tipBorder
 	t.bg.StrokeWidth = 1
 	t.bg.CornerRadius = 6
-	t.text = canvas.NewText("", tipTextColor)
+	t.text = canvas.NewText("", pal.tipText)
 	t.text.TextSize = 12
 	t.obj = container.NewWithoutLayout(t.bg, t.text)
 	t.obj.Hide()

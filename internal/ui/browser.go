@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"image/color"
 	"sort"
 	"strings"
 	"time"
@@ -15,13 +14,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
 	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
-)
-
-// Row text colours: accent blue for the repo name, muted grey for the status line.
-var (
-	rowNameColor = color.NRGBA{R: 91, G: 157, B: 255, A: 255}
-	rowSubColor  = color.NRGBA{R: 168, G: 178, B: 192, A: 235}
 )
 
 // searchEntry is the popover's search field. It intercepts Escape so the popover
@@ -55,7 +49,8 @@ func (e *searchEntry) TypedKey(ev *fyne.KeyEvent) {
 // toggles: a search field and "more" menu across the top, the repo list in the
 // middle, and a summary label along the bottom. A splash (undecorated) window is
 // used so a tray tap toggles it like a real popover; on platforms without splash
-// support we fall back to a regular window.
+// support we fall back to a regular window. The window is created once; its
+// content is (re)built by buildPopoverContent so a theme change can repaint it.
 func (a *App) buildPopover() {
 	var w fyne.Window
 	if drv, ok := a.fyneApp.Driver().(desktop.Driver); ok {
@@ -65,39 +60,53 @@ func (a *App) buildPopover() {
 	}
 	a.win = w
 	w.SetTitle(popoverTitle) // how the macOS native helper finds this NSWindow
-	w.Resize(fyne.NewSize(popoverWidth, popoverHeight))
+	w.Resize(fyne.NewSize(popoverWidth, popoverMaxHeight))
 	w.SetCloseIntercept(a.hidePopover) // hide instead of quitting the app
+	a.buildPopoverContent()
+}
 
+// buildPopoverContent builds (or rebuilds) the popover's widgets and sets them as
+// the window content, using the current palette. It's safe to call again after a
+// theme change: the custom colours below are baked into canvas objects, so they
+// only pick up a new variant when the content is recreated here.
+func (a *App) buildPopoverContent() {
 	a.search = newSearchEntry(func(s string) {
 		a.query = s
 		a.applyFilter()
 	}, a.hidePopover)
+	if a.query != "" {
+		a.search.SetText(a.query) // preserve the active filter across a content rebuild
+	}
 
-	a.tips = newTooltipLayer()
-	a.moreBtn = newTipButton(a.tips, theme.MenuIcon(), "View options", a.showMoreMenu)
+	a.tips = newTooltipLayer(a.pal)
 	updateAllBtn := newTipButton(a.tips, theme.DownloadIcon(), "Update all (pull every repo that's behind)", a.updateAll)
-	right := container.NewHBox(updateAllBtn, a.moreBtn)
-	header := container.NewBorder(nil, nil, nil, right, a.search)
+	settingsBtn := newTipButton(a.tips, theme.SettingsIcon(), "Settings", a.showSettings)
+	a.moreBtn = newTipButton(a.tips, theme.MenuIcon(), "Show/hide filtering header", a.toggleOptions)
+	right := container.NewHBox(updateAllBtn, settingsBtn, a.moreBtn)
+	searchRow := container.NewBorder(nil, nil, nil, right, a.search)
+
+	// The filter/sort toggles live in a panel below the search row that the ☰ button
+	// expands. It's part of the header, so the popover's height math (which measures
+	// a.header) grows to include it automatically when shown.
+	a.optionsPanel = a.buildOptionsPanel()
+	a.optionsPanel.Hide()
+	a.header = container.NewVBox(searchRow, a.optionsPanel)
 
 	a.statusLbl = widget.NewLabel("")
 	a.list = widget.NewList(a.listLen, a.listCreate, a.listUpdate)
 	// No list.OnSelected: rows handle their own tap (expand) + hover buttons.
 
-	content := container.NewBorder(header, a.statusLbl, nil, nil, a.list)
+	content := container.NewBorder(a.header, a.statusLbl, nil, nil, a.list)
 
-	// Glassy backdrop: a dark gradient under the content. On macOS the window
-	// itself is rounded + shadowed natively (see placePopover); the gradient is
-	// clipped to those rounded corners. True OS translucency isn't reachable via
-	// stock Fyne, so this evokes the look instead (see glassTheme).
-	bg := canvas.NewLinearGradient(
-		color.NRGBA{R: 26, G: 31, B: 41, A: 255},
-		color.NRGBA{R: 10, G: 13, B: 20, A: 255},
-		135,
-	)
-	w.SetContent(a.tips.wrap(container.NewStack(bg, container.NewPadded(content))))
+	// Glassy backdrop: a gradient under the content. On macOS the window itself is
+	// rounded + shadowed natively (see placePopover); the gradient is clipped to
+	// those rounded corners. True OS translucency isn't reachable via stock Fyne,
+	// so this evokes the look instead (see glassTheme).
+	bg := canvas.NewLinearGradient(a.pal.gradTop, a.pal.gradBottom, 135)
+	a.win.SetContent(a.tips.wrap(container.NewStack(bg, container.NewPadded(content))))
 
 	// Escape hides the window without quitting.
-	w.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
+	a.win.Canvas().SetOnTypedKey(func(ev *fyne.KeyEvent) {
 		if ev.Name == fyne.KeyEscape {
 			a.hidePopover()
 		}
@@ -106,33 +115,56 @@ func (a *App) buildPopover() {
 	// Focus the search up front so keystrokes land there when the popover is
 	// toggled open via the tray icon (Fyne routes typed runes to the canvas's
 	// focused object).
-	w.Canvas().Focus(a.search)
+	a.win.Canvas().Focus(a.search)
+	a.applyFilter() // populate rows + status for the freshly built content
 }
 
 // hidePopover hides the window and clears the visibility flag the tray toggle
-// reads.
+// reads. The options panel is collapsed too, so the popover reopens lean rather
+// than remembering an expanded panel from last time.
 func (a *App) hidePopover() {
+	if a.optionsPanel != nil {
+		a.optionsPanel.Hide()
+	}
 	a.win.Hide()
 	a.popVisible = false
 }
 
 // showWindow brings the popover to the front, positioned next to the tray icon,
 // with fresh data and the search field focused so the user can type immediately.
+// The window is sized to its content (capped at popoverMaxHeight) so a short list
+// stays lean instead of leaving dead space below the last row.
 func (a *App) showWindow() {
+	a.maybeFollowSystemTheme() // pick up an OS light/dark flip before showing
 	a.refresh()
-	a.win.Resize(fyne.NewSize(popoverWidth, popoverHeight))
+	h := a.desiredPopoverHeight()
+	a.win.Resize(fyne.NewSize(popoverWidth, h))
 	a.win.Show()
 	a.popVisible = true
-	placePopover(popoverTitle, popoverWidth, popoverHeight)
+	placePopover(popoverTitle, popoverWidth, h)
 	a.win.RequestFocus()
 	if a.search != nil {
 		a.win.Canvas().Focus(a.search)
 	}
 }
 
+// maybeFollowSystemTheme rebuilds the popover for the current OS appearance when
+// the theme is set to "system" and the OS has since flipped light/dark. Fyne
+// repaints its own widgets on an OS change, but the popover's custom colours are
+// baked into canvas objects, so they only update when the content is rebuilt.
+func (a *App) maybeFollowSystemTheme() {
+	if a.cfg.ThemeMode() != config.ThemeSystem {
+		return
+	}
+	if sys := a.fyneApp.Settings().ThemeVariant(); sys != a.variant {
+		a.applyTheme()
+		a.buildPopoverContent()
+	}
+}
+
 func (a *App) listLen() int { return len(a.visible) }
 
-func (a *App) listCreate() fyne.CanvasObject { return newRepoRow(a.tips) }
+func (a *App) listCreate() fyne.CanvasObject { return newRepoRow(a.tips, a.pal) }
 
 func (a *App) listUpdate(id widget.ListItemID, o fyne.CanvasObject) {
 	if id < 0 || id >= len(a.visible) {
@@ -289,6 +321,97 @@ func (a *App) applyFilter() {
 		a.list.Refresh()
 	}
 	a.updateStatusLabel()
+	a.resizePopoverToContent()
+}
+
+// resizePopoverToContent shrinks or grows the open popover so it fits its rows
+// (up to popoverMaxHeight). It keeps the window's top-left corner fixed rather
+// than re-anchoring to the cursor, so resizing while the user types in the search
+// field doesn't make the window hop to the pointer. No-op while hidden.
+func (a *App) resizePopoverToContent() {
+	if !a.popVisible || a.win == nil {
+		return
+	}
+	h := a.desiredPopoverHeight()
+	a.win.Resize(fyne.NewSize(popoverWidth, h))
+	resizePopover(popoverTitle, popoverWidth, h)
+}
+
+// desiredPopoverHeight is the height needed to show every visible row without
+// scrolling, clamped to popoverMaxHeight. It mirrors the popover's layout: the
+// padded content (top + bottom) plus the two border gaps around the list make up
+// a fixed chrome (4 paddings), to which the header, status label and the summed
+// row heights are added.
+func (a *App) desiredPopoverHeight() float32 {
+	pad := theme.Padding()
+	chrome := pad * 4
+	var headerH, statusH float32
+	if a.header != nil {
+		headerH = a.header.MinSize().Height
+	}
+	if a.statusLbl != nil {
+		statusH = a.statusLbl.MinSize().Height
+	}
+	body := a.listContentHeight()
+	if min := a.collapsedRowHeight(); body < min {
+		body = min // keep room for at least one row when empty/over-filtered
+	}
+	h := chrome + headerH + statusH + body
+	if h > popoverMaxHeight {
+		h = popoverMaxHeight
+	}
+	return h
+}
+
+// listContentHeight is the height the list needs to show every visible row without
+// scrolling, matching widget.List.contentMinSize: summed item heights plus one
+// inter-row separator (theme.Padding()) between each pair. A collapsed row's height
+// is constant (it depends only on theme sizes, not content), so we use the memoised
+// value for all rows and probe only the single expanded row — whose detail panel
+// makes it taller — for its extra height. This keeps applyFilter (one call per
+// keystroke) at one widget probe at most, instead of one per visible repo.
+func (a *App) listContentHeight() float32 {
+	n := len(a.visible)
+	if n == 0 {
+		return 0
+	}
+	collapsed := a.collapsedRowHeight()
+	total := collapsed * float32(n)
+	if a.expandedPath != "" {
+		for _, r := range a.visible {
+			if r.Path == a.expandedPath {
+				total += a.expandedRowHeight(r) - collapsed
+				break
+			}
+		}
+	}
+	return total + theme.Padding()*float32(n-1)
+}
+
+// collapsedRowHeight is the height of a single collapsed row. It's constant for the
+// app's theme sizes, so it's measured once via a throwaway probe and memoised; it
+// also serves as the minimum body height so an empty/over-filtered list still shows
+// a row's worth of space.
+func (a *App) collapsedRowHeight() float32 {
+	if a.collapsedRow == 0 {
+		probe := newRepoRow(a.tips, a.pal)
+		probe.Configure(monitor.RepoState{Name: "Ag"}, false, false, nil, nil, nil, nil)
+		a.collapsedRow = probe.MinSize().Height
+		probe.clearMarquees()
+	}
+	return a.collapsedRow
+}
+
+// expandedRowHeight measures the height of a row with its detail panel open, using
+// the same repoRow.MinSize the list applies in listUpdate. Pulling is forced off so
+// the throwaway probe never starts the spinner animation; any marquees it builds are
+// cleared immediately.
+func (a *App) expandedRowHeight(r monitor.RepoState) float32 {
+	probe := newRepoRow(a.tips, a.pal)
+	probe.Configure(r, true, false, a.details[r.Path], nil, nil, nil)
+	h := probe.MinSize().Height
+	probe.clearMarquees()
+	return h
 }
 
 func (a *App) updateStatusLabel() {
@@ -299,30 +422,81 @@ func (a *App) updateStatusLabel() {
 	a.statusLbl.SetText(fmt.Sprintf("%d repos · %d behind · showing %d", total, behind, len(a.visible)))
 }
 
-// showMoreMenu pops up the view-options menu beneath the "more" button.
-func (a *App) showMoreMenu() {
-	filterItem := func(label string, mode filterMode) *fyne.MenuItem {
-		it := fyne.NewMenuItem(label, func() { a.filter = mode; a.applyFilter() })
-		it.Checked = a.filter == mode
-		return it
+// toggleOptions shows or hides the inline filter/sort panel below the search row.
+// The panel is part of the header, so growing/shrinking the popover to fit it is
+// just the usual content resize; a full content refresh reflows the list around it.
+func (a *App) toggleOptions() {
+	if a.optionsPanel == nil {
+		return
 	}
-	sortItem := func(label string, mode sortMode) *fyne.MenuItem {
-		it := fyne.NewMenuItem(label, func() { a.sort = mode; a.applyFilter() })
-		it.Checked = a.sort == mode
-		return it
+	if a.optionsPanel.Visible() {
+		a.optionsPanel.Hide()
+	} else {
+		a.optionsPanel.Show()
 	}
-	menu := fyne.NewMenu("",
-		filterItem("Show all", filterAll),
-		filterItem("Only updatable", filterUpdatable),
-		filterItem("Only dirty", filterDirty),
-		fyne.NewMenuItemSeparator(),
-		sortItem("Sort by name", sortName),
-		sortItem("Sort by most behind", sortBehind),
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Refresh now", func() { a.mgr.Refresh() }),
-		fyne.NewMenuItem("Settings…", a.showSettings),
+	if c := a.win.Content(); c != nil {
+		c.Refresh() // reflow so the list yields/reclaims the panel's space
+	}
+	a.resizePopoverToContent()
+}
+
+// buildOptionsPanel builds the compact filter/sort strip: a "Show" row of All /
+// Updatable / Dirty toggles and a "Sort" row of Name / Outdated toggles, closed off
+// with a thin rule that separates it from the repo list. The segment order matches
+// the filterMode / sortMode iota values.
+func (a *App) buildOptionsPanel() *fyne.Container {
+	filter := a.segGroup([]optionSegment{
+		{label: "All"},
+		{label: "Updatable"},
+		{label: "Dirty"},
+	}, int(a.filter), func(i int) { a.filter = filterMode(i); a.applyFilter() })
+
+	sortG := a.segGroup([]optionSegment{
+		{label: "Name", icon: theme.ListIcon()},
+		{label: "Outdated", icon: theme.HistoryIcon()},
+	}, int(a.sort), func(i int) { a.sort = sortMode(i); a.applyFilter() })
+
+	return container.NewVBox(
+		container.NewHBox(a.optLabel("Show"), filter),
+		container.NewHBox(a.optLabel("Sort"), sortG),
+		widget.NewSeparator(), // thin rule between the filtering header and the repos
 	)
-	pop := widget.NewPopUpMenu(menu, a.win.Canvas())
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(a.moreBtn)
-	pop.ShowAtPosition(fyne.NewPos(pos.X, pos.Y+a.moreBtn.Size().Height))
+}
+
+// optLabel is a small bold caption ("Show"/"Sort"), vertically centred so it lines
+// up with the chips beside it.
+func (a *App) optLabel(s string) fyne.CanvasObject {
+	t := canvas.NewText(s, a.pal.rowSub)
+	t.TextSize = chipTextSize
+	t.TextStyle = fyne.TextStyle{Bold: true}
+	return container.NewCenter(t)
+}
+
+// optionSegment is one choice in a segmented toggle control.
+type optionSegment struct {
+	label string
+	icon  fyne.Resource // optional
+}
+
+// segGroup builds a horizontal group of compact toggle chips where exactly one is
+// active. selected is the initial index; onSelect fires with the chosen index and
+// the group re-highlights so the active chip is always the accent-filled one.
+func (a *App) segGroup(segs []optionSegment, selected int, onSelect func(int)) *fyne.Container {
+	chips := make([]*segChip, len(segs))
+	var choose func(int)
+	for i, s := range segs {
+		i := i
+		chips[i] = newSegChip(s.label, s.icon, a.pal, func() { onSelect(i); choose(i) })
+	}
+	choose = func(sel int) {
+		for i, c := range chips {
+			c.setSelected(i == sel)
+		}
+	}
+	choose(selected)
+	objs := make([]fyne.CanvasObject, len(chips))
+	for i := range chips {
+		objs[i] = chips[i]
+	}
+	return container.NewHBox(objs...)
 }
