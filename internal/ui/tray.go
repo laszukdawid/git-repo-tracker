@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"fyne.io/fyne/v2"
 
@@ -76,25 +75,4 @@ func trayLabel(r monitor.RepoState) string {
 		s += fmt.Sprintf("  +%d/-%d", r.LinesAdded, r.LinesDeleted)
 	}
 	return s
-}
-
-// statusGlyphs renders the RepoZ-style status summary: ahead/behind arrows (or ≡
-// when even) followed by the working-tree change counts.
-func statusGlyphs(r monitor.RepoState) string {
-	var b strings.Builder
-	switch {
-	case r.Ahead > 0 && r.Behind > 0:
-		fmt.Fprintf(&b, "↑%d ↓%d ", r.Ahead, r.Behind)
-	case r.Ahead > 0:
-		fmt.Fprintf(&b, "↑%d ", r.Ahead)
-	case r.Behind > 0:
-		fmt.Fprintf(&b, "↓%d ", r.Behind)
-	default:
-		b.WriteString("≡ ")
-	}
-	fmt.Fprintf(&b, "+%d ~%d -%d", r.Staged, r.Modified, r.Deleted)
-	if r.Untracked > 0 {
-		fmt.Fprintf(&b, " ?%d", r.Untracked)
-	}
-	return b.String()
 }

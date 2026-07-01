@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -70,12 +73,16 @@ func (a *App) buildPopover() {
 // theme change: the custom colours below are baked into canvas objects, so they
 // only pick up a new variant when the content is recreated here.
 func (a *App) buildPopoverContent() {
-	a.search = newSearchEntry(func(s string) {
-		a.query = s
-		a.applyFilter()
-	}, a.hidePopover)
+	// Build the entry without its OnChanged first: restoring the preserved query via
+	// SetText below must not fire applyFilter against the half-built content (stale
+	// list/footer, premature resize). Wire OnChanged once the text is in place.
+	a.search = newSearchEntry(nil, a.hidePopover)
 	if a.query != "" {
 		a.search.SetText(a.query) // preserve the active filter across a content rebuild
+	}
+	a.search.OnChanged = func(s string) {
+		a.query = s
+		a.applyFilter()
 	}
 
 	a.tips = newTooltipLayer(a.pal)
@@ -92,11 +99,19 @@ func (a *App) buildPopoverContent() {
 	a.optionsPanel.Hide()
 	a.header = container.NewVBox(searchRow, a.optionsPanel)
 
-	a.statusLbl = widget.NewLabel("")
+	// Footer: repo/behind totals on the left, scan-root count on the right (3a).
+	a.footerLeft = canvas.NewText("", a.pal.faint)
+	a.footerLeft.TextStyle = fyne.TextStyle{Monospace: true}
+	a.footerLeft.TextSize = 11.5
+	a.footerRight = canvas.NewText("", a.pal.faint)
+	a.footerRight.TextStyle = fyne.TextStyle{Monospace: true}
+	a.footerRight.TextSize = 11.5
+	a.footer = container.NewPadded(container.NewHBox(a.footerLeft, layout.NewSpacer(), a.footerRight))
+
 	a.list = widget.NewList(a.listLen, a.listCreate, a.listUpdate)
 	// No list.OnSelected: rows handle their own tap (expand) + hover buttons.
 
-	content := container.NewBorder(a.header, a.statusLbl, nil, nil, a.list)
+	content := container.NewBorder(a.header, a.footer, nil, nil, a.list)
 
 	// Glassy backdrop: a gradient under the content. On macOS the window itself is
 	// rounded + shadowed natively (see placePopover); the gradient is clipped to
@@ -123,6 +138,10 @@ func (a *App) buildPopoverContent() {
 // reads. The options panel is collapsed too, so the popover reopens lean rather
 // than remembering an expanded panel from last time.
 func (a *App) hidePopover() {
+	if a.resizeAnim != nil {
+		a.resizeAnim.Stop() // don't keep resizing a hidden window
+		a.resizeAnim = nil
+	}
 	if a.optionsPanel != nil {
 		a.optionsPanel.Hide()
 	}
@@ -136,8 +155,13 @@ func (a *App) hidePopover() {
 // stays lean instead of leaving dead space below the last row.
 func (a *App) showWindow() {
 	a.maybeFollowSystemTheme() // pick up an OS light/dark flip before showing
+	if a.resizeAnim != nil {
+		a.resizeAnim.Stop() // don't carry a stale animation across a hide/show
+		a.resizeAnim = nil
+	}
 	a.refresh()
 	h := a.desiredPopoverHeight()
+	a.popoverH = h
 	a.win.Resize(fyne.NewSize(popoverWidth, h))
 	a.win.Show()
 	a.popVisible = true
@@ -164,17 +188,37 @@ func (a *App) maybeFollowSystemTheme() {
 
 func (a *App) listLen() int { return len(a.visible) }
 
-func (a *App) listCreate() fyne.CanvasObject { return newRepoRow(a.tips, a.pal) }
+func (a *App) listCreate() fyne.CanvasObject {
+	return newPopoverRow(a.tips, a.pal, a.toggleGroup)
+}
 
 func (a *App) listUpdate(id widget.ListItemID, o fyne.CanvasObject) {
 	if id < 0 || id >= len(a.visible) {
 		return
 	}
-	r := a.visible[id]
-	row := o.(*repoRow)
-	row.Configure(r, a.expandedPath == r.Path, a.pulling[r.Path], a.details[r.Path],
-		a.toggleExpand, a.pullRepo, a.activate)
+	it := a.visible[id]
+	row := o.(*popoverRow)
+	if it.header {
+		row.Configure(it, false, false, nil, nil, nil, nil)
+	} else {
+		p := it.repo.Path
+		row.Configure(it, a.expandedPath == p, a.pulling[p], a.details[p],
+			a.toggleExpand, a.pullRepo, a.activate)
+	}
 	a.list.SetItemHeight(id, row.MinSize().Height)
+}
+
+// toggleGroup folds or unfolds a scan-root section. The list content updates
+// immediately, but the popover height glides to its new value so the section reads
+// as collapsing/expanding rather than snapping (a big jump would otherwise flash a
+// scaled transition frame). suppressAutoResize keeps applyFilter's instant resize
+// out of the way so the animation owns the height.
+func (a *App) toggleGroup(root string) {
+	a.collapsedGrp[root] = !a.collapsedGrp[root]
+	a.suppressAutoResize = true
+	a.applyFilter()
+	a.suppressAutoResize = false
+	a.animatePopoverTo(a.desiredPopoverHeight())
 }
 
 // toggleExpand expands a repo's inline detail panel (collapsing any other), or
@@ -251,43 +295,36 @@ func (a *App) startPull(r monitor.RepoState, showErr bool) {
 	}()
 }
 
-// commitMeta renders the short hash and committed time, e.g.
-// "908e320 · 2026-06-23 18:39". The commit message is shown on its own line.
+// commitMeta renders the short hash and a relative committed time, e.g.
+// "908e320 · 2h ago" (option 3a). The commit message is shown on its own line.
 func commitMeta(hash string, t time.Time) string {
-	when := "unknown"
-	if !t.IsZero() {
-		when = t.Local().Format("2006-01-02 15:04")
-	}
-	return hash + " · " + when
+	return hash + " · " + humanizeTime(t)
 }
 
-// rowSubtitle renders the branch plus the status glyphs and, for updatable
-// repos, how many lines behind they are.
-func rowSubtitle(r monitor.RepoState) string {
-	branch := r.Branch
-	if branch == "" {
-		branch = "—"
+// humanizeTime renders a compact relative time ("just now", "5m ago", "2h ago",
+// "3d ago") and falls back to an absolute date beyond a week.
+func humanizeTime(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
 	}
-	s := fmt.Sprintf("%-22s %s", truncate(branch, 22), statusGlyphs(r))
-	if r.Behind > 0 && (r.LinesAdded > 0 || r.LinesDeleted > 0) {
-		s += fmt.Sprintf("  Δ+%d/-%d", r.LinesAdded, r.LinesDeleted)
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return t.Local().Format("2006-01-02")
 	}
-	if r.Err != "" || r.FetchErr != "" {
-		s += "  ⚠"
-	}
-	return s
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
 }
 
 // applyFilter recomputes the visible rows from the latest snapshot using the
-// current query, filter and sort, then refreshes the list and summary.
+// current query and filter, groups them by scan root, then refreshes the list and
+// footer. Grouping (option 3a) turns the flat list into collapsible sections.
 func (a *App) applyFilter() {
 	q := strings.ToLower(strings.TrimSpace(a.query))
 	out := make([]monitor.RepoState, 0, len(a.all))
@@ -308,33 +345,170 @@ func (a *App) applyFilter() {
 		}
 		out = append(out, r)
 	}
-	switch a.sort {
-	case sortBehind:
-		sort.SliceStable(out, func(i, j int) bool { return out[i].Behind > out[j].Behind })
-	case sortName:
-		sort.SliceStable(out, func(i, j int) bool {
-			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-		})
-	}
-	a.visible = out
+
+	a.visible, a.groupCount = a.groupItems(out)
 	if a.list != nil {
 		a.list.Refresh()
 	}
-	a.updateStatusLabel()
+	a.updateFooter()
 	a.resizePopoverToContent()
+}
+
+// groupItems buckets repos by their scan root and flattens them into the list's
+// header+repo item sequence. Groups appear in configured-root order (extra roots
+// after), each preceded by a section header; a folded section contributes only its
+// header. Within a section repos are sorted by the active sort (behind-first by
+// default). It also returns the number of distinct sections shown.
+func (a *App) groupItems(repos []monitor.RepoState) ([]popoverItem, int) {
+	type expRoot struct{ display, prefix string }
+	var er []expRoot
+	for _, rt := range a.cfg.RootList() {
+		if p := config.ExpandPath(rt.Path); p != "" {
+			er = append(er, expRoot{display: rt.Path, prefix: p})
+		}
+	}
+	groupOf := func(repoPath string) string {
+		best := -1
+		for i := range er {
+			pfx := er[i].prefix
+			if repoPath == pfx || strings.HasPrefix(repoPath, pfx+string(filepath.Separator)) {
+				if best == -1 || len(er[i].prefix) > len(er[best].prefix) {
+					best = i
+				}
+			}
+		}
+		if best >= 0 {
+			return er[best].display
+		}
+		return collapseHome(filepath.Dir(repoPath))
+	}
+
+	groups := map[string][]monitor.RepoState{}
+	var order []string
+	seen := map[string]bool{}
+	for _, e := range er { // configured roots keep their order, even if empty
+		if !seen[e.display] {
+			order = append(order, e.display)
+			seen[e.display] = true
+		}
+	}
+	for _, r := range repos {
+		g := groupOf(r.Path)
+		if !seen[g] {
+			order = append(order, g)
+			seen[g] = true
+		}
+		groups[g] = append(groups[g], r)
+	}
+
+	var items []popoverItem
+	shown := 0
+	for _, g := range order {
+		rs := groups[g]
+		if len(rs) == 0 {
+			continue
+		}
+		shown++
+		sortRepos(rs, a.sort)
+		behind := 0
+		for _, r := range rs {
+			if r.Behind > 0 {
+				behind++
+			}
+		}
+		collapsed := a.collapsedGrp[g]
+		items = append(items, popoverItem{
+			header: true, root: g, count: len(rs), behind: behind, collapsed: collapsed,
+		})
+		if !collapsed {
+			for _, r := range rs {
+				items = append(items, popoverItem{repo: r})
+			}
+		}
+	}
+	return items, shown
+}
+
+// sortRepos orders repos within a section. Errored repos always float to the top
+// (a broken repo is the most important thing to surface — otherwise it's buried and
+// the red tray badge stays a mystery). After that: by name, or (default) most-behind
+// first then by name, so the repos needing a pull rise to the top of each root.
+func sortRepos(rs []monitor.RepoState, mode sortMode) {
+	errored := func(r monitor.RepoState) bool { return r.Err != "" || r.FetchErr != "" }
+	sort.SliceStable(rs, func(i, j int) bool {
+		if ei, ej := errored(rs[i]), errored(rs[j]); ei != ej {
+			return ei
+		}
+		if mode != sortName && rs[i].Behind != rs[j].Behind {
+			return rs[i].Behind > rs[j].Behind
+		}
+		return strings.ToLower(rs[i].Name) < strings.ToLower(rs[j].Name)
+	})
+}
+
+// collapseHome renders an absolute path with a leading ~ for the user's home, so
+// an ungrouped repo's parent reads like the configured roots (e.g. ~/code).
+func collapseHome(p string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if p == home {
+			return "~"
+		}
+		if strings.HasPrefix(p, home+string(filepath.Separator)) {
+			return "~" + p[len(home):]
+		}
+	}
+	return p
 }
 
 // resizePopoverToContent shrinks or grows the open popover so it fits its rows
 // (up to popoverMaxHeight). It keeps the window's top-left corner fixed rather
 // than re-anchoring to the cursor, so resizing while the user types in the search
-// field doesn't make the window hop to the pointer. No-op while hidden.
+// field doesn't make the window hop to the pointer. No-op while hidden or while a
+// collapse/expand animation owns the height (suppressAutoResize).
 func (a *App) resizePopoverToContent() {
+	if !a.popVisible || a.win == nil || a.suppressAutoResize {
+		return
+	}
+	if a.resizeAnim != nil {
+		a.resizeAnim.Stop() // a fresh instant resize supersedes an in-flight animation
+		a.resizeAnim = nil
+	}
+	a.applyPopoverHeight(a.desiredPopoverHeight())
+}
+
+// applyPopoverHeight resizes the popover window to the given height, keeping the
+// top edge anchored (see resizePopover), and records it as the current height.
+func (a *App) applyPopoverHeight(h float32) {
+	a.popoverH = h
+	a.win.Resize(fyne.NewSize(popoverWidth, h))
+	resizePopover(popoverTitle, popoverWidth, h)
+}
+
+// animatePopoverTo glides the popover height from its current value to target over
+// a short ease, so a group collapse/expand reads as motion. It falls back to an
+// instant resize when the popover is hidden or the start height is unknown.
+func (a *App) animatePopoverTo(target float32) {
 	if !a.popVisible || a.win == nil {
 		return
 	}
-	h := a.desiredPopoverHeight()
-	a.win.Resize(fyne.NewSize(popoverWidth, h))
-	resizePopover(popoverTitle, popoverWidth, h)
+	from := a.popoverH
+	if from <= 0 || from == target {
+		a.applyPopoverHeight(target)
+		return
+	}
+	if a.resizeAnim != nil {
+		a.resizeAnim.Stop()
+	}
+	var anim *fyne.Animation
+	anim = fyne.NewAnimation(130*time.Millisecond, func(p float32) {
+		a.applyPopoverHeight(from + (target-from)*p)
+		if p >= 1 && a.resizeAnim == anim {
+			a.resizeAnim = nil // done — don't leave a finished animation around
+		}
+	})
+	anim.Curve = fyne.AnimationEaseInOut
+	a.resizeAnim = anim
+	anim.Start()
 }
 
 // desiredPopoverHeight is the height needed to show every visible row without
@@ -345,81 +519,105 @@ func (a *App) resizePopoverToContent() {
 func (a *App) desiredPopoverHeight() float32 {
 	pad := theme.Padding()
 	chrome := pad * 4
-	var headerH, statusH float32
+	var headerH, footerH float32
 	if a.header != nil {
 		headerH = a.header.MinSize().Height
 	}
-	if a.statusLbl != nil {
-		statusH = a.statusLbl.MinSize().Height
+	if a.footer != nil {
+		footerH = a.footer.MinSize().Height
 	}
 	body := a.listContentHeight()
 	if min := a.collapsedRowHeight(); body < min {
 		body = min // keep room for at least one row when empty/over-filtered
 	}
-	h := chrome + headerH + statusH + body
+	h := chrome + headerH + footerH + body
 	if h > popoverMaxHeight {
 		h = popoverMaxHeight
 	}
 	return h
 }
 
-// listContentHeight is the height the list needs to show every visible row without
+// listContentHeight is the height the list needs to show every visible item without
 // scrolling, matching widget.List.contentMinSize: summed item heights plus one
-// inter-row separator (theme.Padding()) between each pair. A collapsed row's height
-// is constant (it depends only on theme sizes, not content), so we use the memoised
-// value for all rows and probe only the single expanded row — whose detail panel
-// makes it taller — for its extra height. This keeps applyFilter (one call per
-// keystroke) at one widget probe at most, instead of one per visible repo.
+// inter-row separator (theme.Padding()) between each pair. Group headers and
+// collapsed repo rows have constant, memoised heights; only the single expanded row
+// — whose detail panel makes it taller — is probed, keeping applyFilter (one call
+// per keystroke) at one widget probe at most instead of one per visible item.
 func (a *App) listContentHeight() float32 {
 	n := len(a.visible)
 	if n == 0 {
 		return 0
 	}
-	collapsed := a.collapsedRowHeight()
-	total := collapsed * float32(n)
-	if a.expandedPath != "" {
-		for _, r := range a.visible {
-			if r.Path == a.expandedPath {
-				total += a.expandedRowHeight(r) - collapsed
-				break
-			}
+	var total float32
+	for _, it := range a.visible {
+		switch {
+		case it.header:
+			total += a.groupHeaderHeight()
+		case a.expandedPath != "" && it.repo.Path == a.expandedPath:
+			total += a.expandedRowHeight(it.repo)
+		default:
+			total += a.collapsedRowHeight()
 		}
 	}
 	return total + theme.Padding()*float32(n-1)
 }
 
-// collapsedRowHeight is the height of a single collapsed row. It's constant for the
-// app's theme sizes, so it's measured once via a throwaway probe and memoised; it
-// also serves as the minimum body height so an empty/over-filtered list still shows
-// a row's worth of space.
+// probeRow builds a throwaway list item purely to measure a height. Its group
+// toggle is nil (it is never displayed or tapped).
+func (a *App) probeRow() *popoverRow { return newPopoverRow(a.tips, a.pal, nil) }
+
+// collapsedRowHeight is the height of a single collapsed repo row. It's constant for
+// the app's theme sizes, so it's measured once via a throwaway probe and memoised;
+// it also serves as the minimum body height so an empty/over-filtered list still
+// shows a row's worth of space.
 func (a *App) collapsedRowHeight() float32 {
 	if a.collapsedRow == 0 {
-		probe := newRepoRow(a.tips, a.pal)
-		probe.Configure(monitor.RepoState{Name: "Ag"}, false, false, nil, nil, nil, nil)
+		probe := a.probeRow()
+		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag"}}, false, false, nil, nil, nil, nil)
 		a.collapsedRow = probe.MinSize().Height
-		probe.clearMarquees()
+		probe.repo.clearMarquees()
 	}
 	return a.collapsedRow
 }
 
-// expandedRowHeight measures the height of a row with its detail panel open, using
-// the same repoRow.MinSize the list applies in listUpdate. Pulling is forced off so
+// groupHeaderHeight is the constant height of a scan-root section header, memoised
+// via a throwaway probe.
+func (a *App) groupHeaderHeight() float32 {
+	if a.groupRowH == 0 {
+		probe := a.probeRow()
+		probe.Configure(popoverItem{header: true, root: "~/x", count: 1}, false, false, nil, nil, nil, nil)
+		a.groupRowH = probe.MinSize().Height
+	}
+	return a.groupRowH
+}
+
+// expandedRowHeight measures the height of a repo row with its detail panel open,
+// using the same MinSize the list applies in listUpdate. Pulling is forced off so
 // the throwaway probe never starts the spinner animation; any marquees it builds are
 // cleared immediately.
 func (a *App) expandedRowHeight(r monitor.RepoState) float32 {
-	probe := newRepoRow(a.tips, a.pal)
-	probe.Configure(r, true, false, a.details[r.Path], nil, nil, nil)
+	probe := a.probeRow()
+	probe.Configure(popoverItem{repo: r}, true, false, a.details[r.Path], nil, nil, nil)
 	h := probe.MinSize().Height
-	probe.clearMarquees()
+	probe.repo.clearMarquees()
 	return h
 }
 
-func (a *App) updateStatusLabel() {
-	if a.statusLbl == nil {
+// updateFooter refreshes the summary bar: total repos and behind count on the left,
+// the number of scan-root sections shown on the right (option 3a).
+func (a *App) updateFooter() {
+	if a.footerLeft == nil || a.footerRight == nil {
 		return
 	}
 	total, behind := a.mgr.Counts()
-	a.statusLbl.SetText(fmt.Sprintf("%d repos · %d behind · showing %d", total, behind, len(a.visible)))
+	a.footerLeft.Text = fmt.Sprintf("%d repos · %d behind", total, behind)
+	roots := "roots"
+	if a.groupCount == 1 {
+		roots = "root"
+	}
+	a.footerRight.Text = fmt.Sprintf("%d %s", a.groupCount, roots)
+	a.footerLeft.Refresh()
+	a.footerRight.Refresh()
 }
 
 // toggleOptions shows or hides the inline filter/sort panel below the search row.

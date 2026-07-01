@@ -4,8 +4,9 @@ package ui
 
 /*
 #cgo darwin CFLAGS: -x objective-c -fobjc-arc
-#cgo darwin LDFLAGS: -framework Cocoa
+#cgo darwin LDFLAGS: -framework Cocoa -framework QuartzCore
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
 #import <dispatch/dispatch.h>
 
 // findWindow returns the app's NSWindow whose title matches needle, or nil.
@@ -16,6 +17,32 @@ static NSWindow *GRTFindWindow(NSString *needle) {
 		}
 	}
 	return nil;
+}
+
+// GRTKillLayerAnimations disables Core Animation's implicit actions on a view's
+// layer and every descendant. The popover's content view is layer-backed (for the
+// rounded corners), and a layer-backed view animates its bounds/position by default
+// — so a programmatic resize (group collapse/expand, live search filtering) would
+// interpolate the old frame into the new bounds, i.e. briefly scale ("zoom") the
+// whole popover. Pinning contents top-left and nulling the geometry actions makes
+// every resize snap cleanly instead. Re-applied on each show in case Fyne rebuilt
+// the view tree.
+static void GRTKillLayerAnimations(NSView *view) {
+	CALayer *layer = [view layer];
+	if (layer != nil) {
+		layer.contentsGravity = kCAGravityTopLeft;
+		layer.actions = @{
+			@"bounds":     [NSNull null],
+			@"position":   [NSNull null],
+			@"contents":   [NSNull null],
+			@"sublayers":  [NSNull null],
+			@"onOrderIn":  [NSNull null],
+			@"onOrderOut": [NSNull null],
+		};
+	}
+	for (NSView *sub in [view subviews]) {
+		GRTKillLayerAnimations(sub);
+	}
 }
 
 // GRTPlacePopover anchors the window just below the menu bar, horizontally
@@ -69,6 +96,7 @@ static void GRTPlacePopover(const char *title, double width, double height) {
 			[cv setWantsLayer:YES];
 			cv.layer.cornerRadius = 20.0;
 			cv.layer.masksToBounds = YES;
+			GRTKillLayerAnimations(cv); // no implicit scale animation on resize
 		}
 		[NSApp activateIgnoringOtherApps:YES];
 		[win makeKeyAndOrderFront:nil];
@@ -87,9 +115,14 @@ static void GRTResizePopover(const char *title, double width, double height) {
 			return;
 		}
 		NSRect f = [win frame];
-		double top = NSMaxY(f);     // current top edge (origin is bottom-left)
-		double y = top - height;    // keep the top fixed; extend/retract the bottom
+		double top = NSMaxY(f);  // current top edge (origin is bottom-left)
+		double y = top - height; // keep the top fixed; extend/retract the bottom
+		// Suppress implicit layer animations for this geometry change too, so the
+		// resize snaps instead of scaling the old content into the new bounds.
+		[CATransaction begin];
+		[CATransaction setDisableActions:YES];
 		[win setFrame:NSMakeRect(f.origin.x, y, width, height) display:YES animate:NO];
+		[CATransaction commit];
 	});
 }
 

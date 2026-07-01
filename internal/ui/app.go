@@ -13,6 +13,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -75,21 +76,35 @@ type App struct {
 	optionsPanel *fyne.Container // inline filter/sort toggles, hidden until the ☰ button
 	list         *widget.List
 	moreBtn      *tipButton
-	statusLbl    *widget.Label
+	footer       *fyne.Container // "N repos · N behind" / "N roots" summary bar
+	footerLeft   *canvas.Text
+	footerRight  *canvas.Text
 	tips         *tooltipLayer
 
 	all          []monitor.RepoState // latest full snapshot
-	visible      []monitor.RepoState // filtered + sorted rows currently shown
+	visible      []popoverItem       // grouped headers + repo rows currently shown
 	query        string
 	filter       filterMode
 	sort         sortMode
-	collapsedRow float32 // memoised height of a collapsed row (constant per theme sizes)
+	groupCount   int             // distinct scan-root sections currently shown (footer "N roots")
+	collapsedRow float32         // memoised height of a collapsed repo row
+	groupRowH    float32         // memoised height of a group-header row
+	collapsedGrp map[string]bool // scan roots the user has folded closed
 
 	popVisible   bool                        // whether the popover is currently shown (for tray toggle)
 	lastResign   time.Time                   // when the popover last auto-hid on focus loss
 	expandedPath string                      // repo path expanded inline ("" = none)
 	pulling      map[string]bool             // repos with a pull in progress
 	details      map[string]*monitor.Details // cached commit details for expanded repos
+	trayKey      string                      // memoised tray icon state key (skip redundant re-encodes)
+
+	// Popover height animation state (main thread only). popoverH is the last
+	// applied height; resizeAnim animates a group collapse/expand smoothly; while
+	// suppressAutoResize is set the per-render instant resize is skipped so the
+	// animation owns the height.
+	popoverH           float32
+	resizeAnim         *fyne.Animation
+	suppressAutoResize bool
 }
 
 // NewApp constructs the application around an already-loaded config.
@@ -102,6 +117,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 	a := &App{
 		fyneApp: fyneApp, desk: desk, cfg: cfg, filter: filterAll, sort: sortBehind,
 		pulling: map[string]bool{}, details: map[string]*monitor.Details{},
+		collapsedGrp: map[string]bool{},
 	}
 	a.applyTheme() // resolve the configured appearance before any UI is built
 	a.mgr = monitor.New(cfg, a.onChange, a.logf)
@@ -135,7 +151,7 @@ func (a *App) resolveVariant() (variant fyne.ThemeVariant, forced bool) {
 func (a *App) Run() {
 	a.buildPopover()
 	a.rebuildTray()
-	a.desk.SetSystemTrayIcon(trayIcon())
+	a.updateTrayIcon()
 	// Left-click the tray icon toggles the search popover; with no secondary
 	// handler set, right-click falls through to the menu above. We register the
 	// handler ourselves (rather than desk.SetSystemTrayWindow) so we can also
@@ -183,11 +199,13 @@ func (a *App) onChange() {
 	fyne.Do(a.refresh)
 }
 
-// refresh pulls the latest snapshot and updates both the list and the tray.
+// refresh pulls the latest snapshot and updates the list, the tray menu, and the
+// menu-bar icon state.
 func (a *App) refresh() {
 	a.all = a.mgr.Snapshot()
 	a.applyFilter()
 	a.rebuildTray()
+	a.updateTrayIcon()
 }
 
 // activate runs the configured click action for a repo.
