@@ -103,7 +103,7 @@ from disk. See [CONFIGURATION.md](CONFIGURATION.md).
 <p align="center">
   <img src="media/screenshot.png" alt="The search popover" width="340">
   &nbsp;&nbsp;
-  <img src="media/demo.gif" alt="git-repo-tracker in action" width="380">
+  <img src="media/linux-native-tray.svg" alt="Ubuntu native tray menu" width="360">
 </p>
 
 Fyne is great for cross-platform widgets but lacks a few things a menu-bar app
@@ -112,6 +112,10 @@ wants; these are the non-obvious bits:
 - **Tray popover.** A native tray menu can't host a text field, so the popover is
   a borderless **splash window**. Left-click toggles it (`systray.SetOnTapped`),
   right-click shows the menu; the search field is the window's content.
+- **Linux native tray.** AppIndicator menus are intentionally kept limited: a
+  snapshot of outdated repos plus one `Open App` item that opens the real Fyne UI.
+  Search, settings and config editing live in the app window rather than
+  pretending the native menu can host them.
 - **UI subpackages.** `internal/ui` owns Fyne app state and orchestration. Leaf
   UI concerns that do not need App state live in subpackages: `internal/ui/actions`
   for open-folder/editor/terminal commands and `internal/ui/trayicon` for tray icon

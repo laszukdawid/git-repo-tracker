@@ -62,12 +62,14 @@ The app lives in the menu bar / system tray — it has no main window.
 
 <p align="center">
   <img src="docs/media/screenshot.png" alt="The search popover" width="360">
+  &nbsp;&nbsp;
+  <img src="docs/media/linux-native-tray.svg" alt="Ubuntu native tray menu" width="360">
 </p>
 
 | Action | Result |
 |--------|--------|
 | **Left-click** the tray icon | Open/close the search popover |
-| **Right-click** the tray icon | Native menu: behind repos, Browse, Refresh, Settings, Quit |
+| **Right-click** the tray icon | Native menu. Linux shows outdated repos plus **Open App**. |
 | Type in the search box | Live-filter by name or branch |
 | **Click a repo row** | Expand inline detail (path + latest commit times) |
 | **Hover a row** | Reveal **⬇ pull** (fast-forward) and **📂 open** icons |
@@ -95,6 +97,7 @@ See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference
 - **[Configuration reference](docs/CONFIGURATION.md)** — every option, env vars, cache.
 - **[Architecture](docs/ARCHITECTURE.md)** — layering, concurrency, caching, the Fyne/cgo internals.
 - **[GNOME extension development](docs/GNOME_EXTENSION.md)** — optional Ubuntu/Fedora integration.
+- **[Release checklist](docs/RELEASE.md)** — first-release verification and packaging notes.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, build/test/release workflow, code layout.
 
 Run **`task docs`** to preview the site locally with
@@ -109,6 +112,9 @@ Run **`task docs`** to preview the site locally with
 - **Popover position** — anchors under the cursor at the top of the screen on
   macOS (Fyne/systray don't expose the tray icon's exact position). On
   Linux/Wayland, placement is left to the compositor.
+- **Linux native tray** — AppIndicator menus are intentionally simple: they show
+  outdated repos and **Open App**. Rich search, settings and inline detail live in
+  the app window or optional GNOME Shell integration.
 - **Click-away dismiss** — works on macOS (app-deactivation observer); on
   Linux/Windows use `Esc` or click the tray icon again.
 

@@ -5,9 +5,9 @@ vars:
   BIN: git-repo-tracker
   CLI_BIN: git-repo-tracker-cli
   APP_ID: com.github.laszukdawid.git-repo-tracker
+  TAP: laszukdawid/tap
   GNOME_UUID: git-repo-tracker@laszukdawid.github.com
   GNOME_DIR: integrations/gnome-shell
-  TAP: laszukdawid/tap
 
 tasks:
   default:
@@ -88,7 +88,7 @@ tasks:
       - sudo apt-get install -y gnome-shell-extension-manager gnome-shell-extensions gjs
 
   gnome:install:
-    desc: Clean-install the GNOME extension and CLI bridge for development
+    desc: Clean-install the optional GNOME extension and CLI bridge for development
     deps: [cli-build]
     cmds:
       - rm -rf "$HOME/.local/share/gnome-shell/extensions/{{.GNOME_UUID}}"
@@ -136,16 +136,16 @@ tasks:
     cmds:
       - node --check {{.GNOME_DIR}}/extension.js
 
-  clean:
-    desc: Remove build artifacts
-    cmds:
-      - rm -rf {{.BIN}} "{{.APP_NAME}}.app" dist
-
   gnome:clean:
     desc: Remove the installed development GNOME extension
     cmds:
       - gnome-extensions disable {{.GNOME_UUID}} || true
       - rm -rf "$HOME/.local/share/gnome-shell/extensions/{{.GNOME_UUID}}"
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -rf {{.BIN}} "{{.APP_NAME}}.app" dist
 
   release-check:
     desc: Validate the GoReleaser config

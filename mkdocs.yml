@@ -33,6 +33,7 @@ nav:
   - Configuration: CONFIGURATION.md
   - Architecture: ARCHITECTURE.md
   - GNOME Extension: GNOME_EXTENSION.md
+  - Release: RELEASE.md
 
 markdown_extensions:
   - admonition

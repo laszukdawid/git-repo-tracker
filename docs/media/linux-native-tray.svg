@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="690" viewBox="0 0 480 690" role="img" aria-labelledby="title desc">
+  <title id="title">Ubuntu native tray menu</title>
+  <desc id="desc">A dark Ubuntu AppIndicator native menu showing repositories behind their upstream and an Open App action.</desc>
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <style>
+      .panel { fill: #191919; stroke: #414141; stroke-width: 1; }
+      .rule { stroke: #3a3a3a; stroke-width: 1; }
+      .muted { fill: #9aa4b2; font: 14px sans-serif; }
+      .text { fill: #f7f7f7; font: 15px sans-serif; }
+      .icon { fill: #f7f7f7; font: 16px sans-serif; text-anchor: middle; }
+    </style>
+  </defs>
+  <rect x="32" y="18" width="416" height="664" rx="12" class="panel" filter="url(#shadow)"/>
+  <text x="68" y="58" class="muted">88 repos · 19 behind</text>
+  <line x1="68" y1="85" x2="428" y2="85" class="rule"/>
+
+  <g transform="translate(68 118)">
+    <text x="0" y="0" class="text">llama.cpp master ↓1005 ↑1 +368959/-110413</text>
+    <text x="352" y="0" class="icon">↧</text>
+
+    <text x="0" y="41" class="text">activitywatch master ↓574 dirty +4213/-730</text>
+    <text x="352" y="41" class="icon">⚠</text>
+
+    <text x="0" y="82" class="text">TTS dev ↓377 dirty +32603/-2434</text>
+    <text x="352" y="82" class="icon">⚠</text>
+
+    <text x="0" y="123" class="text">joplin-mcp main ↓107 +12915/-8147</text>
+    <text x="352" y="123" class="icon">↧</text>
+
+    <text x="0" y="164" class="text">BreezeStyleSheets main ↓103 dirty +11589/-10164</text>
+    <text x="352" y="164" class="icon">⚠</text>
+
+    <text x="0" y="205" class="text">claude-engineer main ↓93 +7790/-1551</text>
+    <text x="352" y="205" class="icon">↧</text>
+
+    <text x="0" y="246" class="text">gym-games master ↓29 dirty +1019/-387</text>
+    <text x="352" y="246" class="icon">⚠</text>
+
+    <text x="0" y="287" class="text">MinAtar master ↓20 dirty +315/-145</text>
+    <text x="352" y="287" class="icon">⚠</text>
+
+    <text x="0" y="328" class="text">personal-engine-fitbit master ↓17 dirty +3699/-1</text>
+    <text x="352" y="328" class="icon">⚠</text>
+
+    <text x="0" y="369" class="text">jetbot master ↓11 dirty +146/-15</text>
+    <text x="352" y="369" class="icon">⚠</text>
+
+    <text x="0" y="410" class="text">pollytron master ↓11 dirty +5256/-1976</text>
+    <text x="352" y="410" class="icon">⚠</text>
+
+    <text x="0" y="451" class="text">DeepRL master ↓9 dirty +90/-3</text>
+    <text x="352" y="451" class="icon">⚠</text>
+
+    <text x="0" y="492" class="text">...and 7 more</text>
+    <text x="352" y="492" class="icon">...</text>
+  </g>
+
+  <line x1="68" y1="632" x2="428" y2="632" class="rule"/>
+  <text x="68" y="664" class="text">Open App</text>
+</svg>

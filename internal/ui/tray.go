@@ -12,11 +12,12 @@ import (
 	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 )
 
-// rebuildTray reconstructs the whole tray menu from the current snapshot. Fyne
-// has no incremental menu update, so we replace the menu wholesale; this is
-// cheap and keeps labels perfectly in sync with state.
+// rebuildTray reconstructs the native tray menu. macOS keeps the dynamic repo
+// summary menu; Linux deliberately exposes only a stable launcher item because
+// AppIndicator menus cannot provide the rich app UI reliably.
 func (a *App) rebuildTray() {
-	if runtime.GOOS == "linux" && a.trayBuilt {
+	if runtime.GOOS == "linux" {
+		a.rebuildLinuxTray()
 		return
 	}
 	if a.trayOpen {
@@ -89,10 +90,68 @@ func (a *App) rebuildTray() {
 	}
 }
 
-func (a *App) refreshFromTray() {
-	if runtime.GOOS == "linux" {
-		a.trayBuilt = false
+func (a *App) rebuildLinuxTray() {
+	if a.trayBuilt {
+		return
 	}
+	snap := a.mgr.Snapshot()
+	var updatable []monitor.RepoState
+	for _, r := range snap {
+		if r.Behind > 0 {
+			updatable = append(updatable, r)
+		}
+	}
+	sort.SliceStable(updatable, func(i, j int) bool {
+		return updatable[i].Behind > updatable[j].Behind
+	})
+
+	header := fyne.NewMenuItem(fmt.Sprintf("%d repos · %d behind", len(snap), len(updatable)), nil)
+	header.Disabled = true
+	items := []*fyne.MenuItem{header, fyne.NewMenuItemSeparator()}
+
+	switch {
+	case len(snap) == 0:
+		empty := fyne.NewMenuItem("No repositories found — open app to configure roots", nil)
+		empty.Disabled = true
+		items = append(items, empty)
+	case len(updatable) == 0:
+		ok := fyne.NewMenuItem("Everything up to date ✓", nil)
+		ok.Disabled = true
+		items = append(items, ok)
+	default:
+		shown := updatable
+		if len(shown) > maxTrayRepos {
+			shown = shown[:maxTrayRepos]
+		}
+		for _, r := range shown {
+			r := r
+			item := fyne.NewMenuItem(trayLabel(r), func() { a.activate(r) })
+			item.Icon = trayMenuIcon(r)
+			items = append(items, item)
+		}
+		if len(updatable) > maxTrayRepos {
+			rest := fyne.NewMenuItem(fmt.Sprintf("...and %d more", len(updatable)-maxTrayRepos), func() { fyne.Do(a.openApp) })
+			rest.Icon = theme.MoreHorizontalIcon()
+			items = append(items, rest)
+		}
+	}
+
+	open := fyne.NewMenuItem("Open App", func() { fyne.Do(a.openApp) })
+	// Fyne appends a Quit item to tray menus that do not contain one. Linux uses
+	// the native tray menu as a status summary plus app launcher, so suppress the
+	// synthetic Quit item while keeping this action focused on opening the real UI.
+	open.IsQuit = true
+	items = append(items, fyne.NewMenuItemSeparator(), open)
+	a.desk.SetSystemTrayMenu(fyne.NewMenu("Git Repos", items...))
+	a.trayBuilt = true
+}
+
+func (a *App) openApp() {
+	a.mgr.Refresh()
+	a.showWindow()
+}
+
+func (a *App) refreshFromTray() {
 	a.mgr.Refresh()
 	a.refresh()
 }

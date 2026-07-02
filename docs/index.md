@@ -24,7 +24,12 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
 
 <p align="center">
   <img src="media/screenshot.png" alt="The search popover" width="320">
+  &nbsp;&nbsp;
+  <img src="media/linux-native-tray.svg" alt="Ubuntu native tray menu" width="340">
 </p>
+
+On Linux, the native AppIndicator menu stays intentionally modest: it lists repos
+that are behind and provides **Open App** for the full searchable UI.
 
 ## Install
 

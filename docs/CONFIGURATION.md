@@ -1,8 +1,10 @@
 # Configuration
 
 Configuration is a YAML file. It's hand-editable and also editable in-app via
-**Settings** (right-click the tray icon → Settings…). Changes made in Settings
-are written atomically; hand-edits take effect via the tray's **Reload Config**.
+**Settings**. On Linux, use the tray's **Open App** item first, then the Settings
+button in the app window. Changes made in Settings are written atomically;
+hand-edits take effect via **Reload Config** where that action is exposed, or by
+restarting the app.
 
 ## File location
 
