@@ -28,12 +28,12 @@ If you add first-party code, also run a `snyk_code_scan` and fix until clean
 ## Layout
 
 ```
-main.go               flags/version/wiring
+cmd/git-repo-tracker/ native app flags/version/wiring
 internal/config/      YAML config: load, atomic write + rollback (update()), accessors
 internal/git/         git subprocess wrappers (status/fetch/pull/diff) + PATH/env (exec.go)
 internal/scan/        concurrent filesystem discovery
 internal/monitor/     daemon: registry, refresh loops, worker pool, JSON cache
-internal/ui/          Fyne UI; native_darwin*.go = macOS cgo, native_other.go = stubs
+internal/ui/          Fyne UI; subpackages actions/ and trayicon/ are leaf helpers
 internal/loginitem/   launch-at-login
 internal/assets/      icon.svg + generator (`go run ./internal/assets/gen` → icon.png)
 ```
@@ -103,7 +103,7 @@ without a display:
 cat > /tmp/grt-smoke.yaml <<'EOF'
 roots: [{path: ~/projects, depth: 6, autoFetch: false}]
 EOF
-go build -o /tmp/grt . && GIT_REPO_TRACKER_CONFIG=/tmp/grt-smoke.yaml /tmp/grt &
+go build -o /tmp/grt ./cmd/git-repo-tracker && GIT_REPO_TRACKER_CONFIG=/tmp/grt-smoke.yaml /tmp/grt &
 sleep 4; kill %1
 ```
 

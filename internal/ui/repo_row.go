@@ -12,7 +12,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 )
 
 // Row metrics for the main popover (option 3a). The row uses the design's literal

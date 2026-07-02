@@ -39,7 +39,7 @@ brew install --cask laszukdawid/tap/git-repo-tracker
 Requires **Go 1.26+** and `git`. On Debian/Ubuntu, `task linux-deps` first.
 
 ```sh
-task run     # or: go run .
+task run     # or: go run ./cmd/git-repo-tracker
 task build   # produces ./git-repo-tracker
 ```
 

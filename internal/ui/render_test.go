@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 )
 
 // assertRenders builds a widget's renderer and runs a layout+refresh pass at a
@@ -94,6 +96,31 @@ func TestMarqueeOverflowAndText(t *testing.T) {
 	}
 	if m.text.Position().X != 0 {
 		t.Errorf("non-overflow text should sit at x=0, got %v", m.text.Position().X)
+	}
+}
+
+func TestTooltipShowCachesSameTarget(t *testing.T) {
+	app := test.NewApp()
+	app.Settings().SetTheme(glassTheme{variant: theme.VariantDark, forced: true})
+	w := app.NewWindow("tooltip")
+	tips := newTooltipLayer(paletteFor(theme.VariantDark))
+	target := widget.NewButton("hover", nil)
+	w.SetContent(tips.wrap(container.NewStack(target)))
+	w.Resize(fyne.NewSize(200, 100))
+	w.Show()
+
+	tips.show("Open folder", target)
+	if !tips.obj.Visible() {
+		t.Fatal("tooltip should be visible after show")
+	}
+	tips.bg.Move(fyne.NewPos(123, 45))
+	tips.show("Open folder", target)
+	if got := tips.bg.Position(); got.X != 123 || got.Y != 45 {
+		t.Errorf("same tooltip target should be cached, got position %v", got)
+	}
+	tips.hide()
+	if tips.obj.Visible() || tips.shownText != "" || tips.shownFor != nil {
+		t.Errorf("hide should clear tooltip state")
 	}
 }
 

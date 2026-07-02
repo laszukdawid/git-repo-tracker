@@ -15,7 +15,7 @@ the notes below cover the dev setup and conventions.
 ## Common commands
 
 ```sh
-task run     # go run .
+task run     # go run ./cmd/git-repo-tracker
 task build   # build ./git-repo-tracker
 task test    # go test ./...
 task check   # gofmt + go vet + go test    ← run before pushing
@@ -35,13 +35,15 @@ go test -race ./...
 ## Project layout
 
 ```
-main.go                  flags, version, wiring
+cmd/git-repo-tracker/    native app flags, version, wiring
 internal/
   config/                YAML config: load, atomic write + rollback, accessors
   git/                   git subprocess wrappers (status/fetch/pull/diff) + PATH/env
   scan/                  concurrent filesystem discovery of repos
   monitor/               daemon: registry, refresh loops, worker pool, cache
   ui/                    Fyne UI (tray, popover, rows, settings, theme, tooltips)
+    actions/             open-folder/editor/terminal command helpers
+    trayicon/            tray icon resource rendering
     native_darwin*.go    macOS-only cgo (positioning, rounded corners, auto-hide)
     native_other.go      no-op stubs for non-macOS
   loginitem/             launch-at-login (macOS plist / Linux .desktop)

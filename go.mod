@@ -1,4 +1,4 @@
-module github.com/dawidlaszuk/git-repo-tracker
+module github.com/laszukdawid/git-repo-tracker
 
 go 1.26.3
 

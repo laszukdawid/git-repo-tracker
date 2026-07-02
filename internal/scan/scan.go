@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
 )
 
 // Discover walks every root concurrently and returns the absolute paths of all

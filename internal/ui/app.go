@@ -19,11 +19,13 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"fyne.io/systray"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/backend"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui/actions"
 )
 
-const appID = "com.github.dawidlaszuk.git-repo-tracker"
+const appID = "com.github.laszukdawid.git-repo-tracker"
 
 // maxTrayRepos caps how many updatable repos appear directly in the tray menu;
 // the rest are reachable through the browser window.
@@ -59,7 +61,7 @@ type App struct {
 	fyneApp fyne.App
 	desk    desktop.App
 	cfg     *config.Config
-	mgr     *monitor.Manager
+	mgr     *backend.Service
 
 	// win is the borderless search popover, toggled by left-clicking the tray
 	// icon (see SetSystemTrayWindow in Run). It stays hidden until tapped.
@@ -91,12 +93,17 @@ type App struct {
 	groupRowH    float32         // memoised height of a group-header row
 	collapsedGrp map[string]bool // scan roots the user has folded closed
 
-	popVisible   bool                        // whether the popover is currently shown (for tray toggle)
-	lastResign   time.Time                   // when the popover last auto-hid on focus loss
-	expandedPath string                      // repo path expanded inline ("" = none)
-	pulling      map[string]bool             // repos with a pull in progress
-	details      map[string]*monitor.Details // cached commit details for expanded repos
-	trayKey      string                      // memoised tray icon state key (skip redundant re-encodes)
+	popVisible    bool                        // whether the popover is currently shown (for tray toggle)
+	lastResign    time.Time                   // when the popover last auto-hid on focus loss
+	expandedPath  string                      // repo path expanded inline ("" = none)
+	pulling       map[string]bool             // repos with a pull in progress
+	details       map[string]*monitor.Details // cached commit details for expanded repos
+	trayKey       string                      // memoised tray icon state key (skip redundant re-encodes)
+	trayOpen      bool                        // native tray menu is probably open; avoid replacing it under the cursor
+	trayDirty     bool                        // a tray rebuild was requested while the menu was open
+	trayIconDirty bool                        // a tray icon update was requested while the menu was open
+	trayBuilt     bool                        // Linux native menus are snapshot-based to avoid AppIndicator flicker
+	trayTimer     *time.Timer                 // best-effort tray-open timeout; systray has no close event
 
 	// Popover height animation state (main thread only). popoverH is the last
 	// applied height; resizeAnim animates a group collapse/expand smoothly; while
@@ -120,7 +127,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 		collapsedGrp: map[string]bool{},
 	}
 	a.applyTheme() // resolve the configured appearance before any UI is built
-	a.mgr = monitor.New(cfg, a.onChange, a.logf)
+	a.mgr = backend.New(cfg, a.onChange, a.logf)
 	return a, nil
 }
 
@@ -152,16 +159,58 @@ func (a *App) Run() {
 	a.buildPopover()
 	a.rebuildTray()
 	a.updateTrayIcon()
-	// Left-click the tray icon toggles the search popover; with no secondary
-	// handler set, right-click falls through to the menu above. We register the
-	// handler ourselves (rather than desk.SetSystemTrayWindow) so we can also
-	// position and focus the window on each open.
-	systray.SetOnTapped(a.togglePopover)
+	if runtime.GOOS == "linux" {
+		// Let Ubuntu/AppIndicator own tray clicks and show the native menu. Registering
+		// a custom activation handler here fights the host and causes double-click or
+		// misplaced-window behaviour on some desktops.
+		systray.SetOnTapped(nil)
+		systray.SetOnSecondaryTapped(nil)
+	} else {
+		// Left-click toggles the rich popover; right-click falls through to the menu.
+		systray.SetOnTapped(a.togglePopover)
+	}
+	a.watchTrayOpen()
 	// Dismiss the popover when the user clicks outside the app, like a real
 	// menu-bar popover.
 	watchPopoverAutoHide(a.onPopoverResign)
 	a.mgr.Start()
 	a.fyneApp.Run()
+}
+
+// watchTrayOpen tracks when the host opens the native tray menu. Linux tray hosts
+// can redraw or drop clicks if we replace the menu while it is visible, so menu
+// rebuilds are deferred briefly after an open event. systray exposes no close
+// event, hence the timeout-based release.
+func (a *App) watchTrayOpen() {
+	go func() {
+		for range systray.TrayOpenedCh {
+			fyne.Do(func() {
+				a.trayOpen = true
+				if a.trayTimer != nil {
+					a.trayTimer.Stop()
+				}
+				a.trayTimer = time.AfterFunc(3*time.Second, func() {
+					fyne.Do(a.releaseTray)
+				})
+			})
+		}
+	}()
+}
+
+func (a *App) releaseTray() {
+	if a.trayTimer != nil {
+		a.trayTimer.Stop()
+		a.trayTimer = nil
+	}
+	a.trayOpen = false
+	if a.trayDirty {
+		a.trayDirty = false
+		a.rebuildTray()
+	}
+	if a.trayIconDirty {
+		a.trayIconDirty = false
+		a.updateTrayIcon()
+	}
 }
 
 // togglePopover shows the popover (positioned + focused) or hides it if already
@@ -211,7 +260,7 @@ func (a *App) refresh() {
 // activate runs the configured click action for a repo.
 func (a *App) activate(r monitor.RepoState) {
 	action, custom := a.cfg.Click()
-	if err := runAction(action, custom, r.Path); err != nil {
+	if err := actions.Run(action, custom, r.Path); err != nil {
 		a.logf("open %s: %v", r.Name, err)
 	}
 }
@@ -230,6 +279,9 @@ func (a *App) reloadConfig() {
 	a.applyTheme()
 	if a.variant != prevVariant {
 		a.buildPopoverContent()
+	}
+	if runtime.GOOS == "linux" {
+		a.trayBuilt = false
 	}
 	a.mgr.Refresh()
 	a.refresh()

@@ -69,7 +69,7 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o git-repo-tracker .
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o git-repo-tracker ./cmd/git-repo-tracker
           tar -czf "git-repo-tracker_Linux_x86_64.tar.gz" git-repo-tracker README.md LICENSE config.example.yaml
 
       - name: Upload to release

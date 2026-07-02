@@ -13,7 +13,7 @@ import (
 )
 
 // Label is the reverse-DNS identifier and file stem used for the login item.
-const Label = "com.github.dawidlaszuk.git-repo-tracker"
+const Label = "com.github.laszukdawid.git-repo-tracker"
 
 // appName is the human-readable name used in the Linux .desktop entry.
 const appName = "git-repo-tracker"

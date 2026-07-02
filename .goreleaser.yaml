@@ -19,7 +19,7 @@ before:
 
 builds:
   - id: git-repo-tracker
-    main: .
+    main: ./cmd/git-repo-tracker
     binary: git-repo-tracker
     env:
       - CGO_ENABLED=1

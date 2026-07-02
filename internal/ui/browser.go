@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -17,8 +18,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 )
 
 // searchEntry is the popover's search field. It intercepts Escape so the popover
@@ -56,16 +57,24 @@ func (e *searchEntry) TypedKey(ev *fyne.KeyEvent) {
 // content is (re)built by buildPopoverContent so a theme change can repaint it.
 func (a *App) buildPopover() {
 	var w fyne.Window
-	if drv, ok := a.fyneApp.Driver().(desktop.Driver); ok {
+	if useSplashPopover() {
+		drv := a.fyneApp.Driver().(desktop.Driver)
 		w = drv.CreateSplashWindow()
 	} else {
-		w = a.fyneApp.NewWindow("Repositories")
+		w = a.fyneApp.NewWindow("Git Repositories")
 	}
 	a.win = w
 	w.SetTitle(popoverTitle) // how the macOS native helper finds this NSWindow
 	w.Resize(fyne.NewSize(popoverWidth, popoverMaxHeight))
 	w.SetCloseIntercept(a.hidePopover) // hide instead of quitting the app
 	a.buildPopoverContent()
+}
+
+func useSplashPopover() bool {
+	// The splash-window popover depends on macOS native helpers for placement,
+	// focus-loss dismissal and top-anchored resizing. On Linux, use a normal window
+	// and let the window manager place it predictably.
+	return runtime.GOOS == "darwin"
 }
 
 // buildPopoverContent builds (or rebuilds) the popover's widgets and sets them as
@@ -653,10 +662,17 @@ func (a *App) buildOptionsPanel() *fyne.Container {
 		{label: "Name", icon: theme.ListIcon()},
 		{label: "Outdated", icon: theme.HistoryIcon()},
 	}, int(a.sort), func(i int) { a.sort = sortMode(i); a.applyFilter() })
+	actions := container.NewHBox(
+		widget.NewButton("Refresh", func() { a.mgr.Refresh() }),
+		widget.NewButton("Open Config", a.openConfigInEditor),
+		widget.NewButton("Reload", a.reloadConfig),
+		widget.NewButton("Quit", a.quit),
+	)
 
 	return container.NewVBox(
 		container.NewHBox(a.optLabel("Show"), filter),
 		container.NewHBox(a.optLabel("Sort"), sortG),
+		container.NewHBox(a.optLabel("Actions"), actions),
 		widget.NewSeparator(), // thin rule between the filtering header and the repos
 	)
 }

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
 )
 
 func mkRepo(t *testing.T, path string) {

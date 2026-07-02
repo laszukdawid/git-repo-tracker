@@ -1,29 +1,40 @@
 # Architecture
 
-`git-repo-tracker` is a Go + [Fyne](https://fyne.io) v2 desktop app. It's split
-into clear layers so the GUI never blocks on git, and state flows one way:
-**discover → refresh → cache → notify the UI**.
+`git-repo-tracker` is a Go repo-tracking backend with platform frontends. The
+current desktop frontend is a [Fyne](https://fyne.io) v2 tray app; a headless CLI
+uses the same backend, and Linux/GNOME can grow a Shell-extension frontend on top
+of the same service boundary. State flows one way: **discover → refresh → cache →
+notify the frontend**.
 
 ## Layers
 
 | Layer | Package(s) | Responsibility |
 |-------|-----------|----------------|
+| Frontends | `cmd/git-repo-tracker`, `cmd/git-repo-tracker-cli`, `internal/ui` | Native Fyne app and headless CLI entrypoints |
+| Optional integrations | `integrations/gnome-shell` | GNOME Shell panel frontend; shells out to the CLI and can move to a separate repo |
+| Backend | `internal/backend` | Shared service boundary over config + monitor for GUI, CLI, and future platform frontends |
 | GUI | `internal/ui` | Tray menu, search popover, settings window, theme, tooltips, click actions; macOS-native bits (cgo) |
 | Daemon | `internal/monitor` | Repo registry, the refresh schedulers, bounded worker pool, debounced change notifications, on-disk cache |
 | API | `internal/git`, `internal/scan` | Per-repo git operations (status/fetch/pull/diff); filesystem discovery |
 | Persistence | `internal/config` | YAML config — mutex-guarded, atomic writes, rollback on failure |
 | Platform | `internal/loginitem` | Launch-at-login (macOS LaunchAgent / Linux XDG autostart) |
 
-`main.go` wires version/flags → loads `config` → constructs `ui.App` → runs.
+`cmd/git-repo-tracker` wires version/flags → loads backend config → constructs `ui.App` → runs.
+`cmd/git-repo-tracker-cli` uses `internal/backend` without importing Fyne. The
+GNOME Shell extension shells out to that CLI and renders GNOME-native panel menu
+widgets, which is how it can support expandable sections and live updates on
+Ubuntu/Fedora without AppIndicator limitations.
 
 Layers communicate through a **single `onChange` callback**, not channels: the
 monitor calls `onChange` when state changes; the UI marshals that onto Fyne's
 main thread with `fyne.Do`. There are no channels between layers.
 
 ```
-main ─▶ ui.App ──constructs──▶ monitor.Manager ──calls──▶ git / scan
-          ▲                          │
-          └────── onChange ──────────┘   (debounced; runs via fyne.Do)
+cmd/git-repo-tracker ─▶ ui.App ─▶ backend.Service ─▶ monitor.Manager ─▶ git / scan
+                         ▲              │                    │
+                         └── onChange ◀─┴────────────────────┘   (debounced; runs via fyne.Do)
+
+cmd/git-repo-tracker-cli ─▶ backend.Service ─▶ monitor.Manager ─▶ git / scan
 ```
 
 ## Data flow & threading
@@ -101,6 +112,10 @@ wants; these are the non-obvious bits:
 - **Tray popover.** A native tray menu can't host a text field, so the popover is
   a borderless **splash window**. Left-click toggles it (`systray.SetOnTapped`),
   right-click shows the menu; the search field is the window's content.
+- **UI subpackages.** `internal/ui` owns Fyne app state and orchestration. Leaf
+  UI concerns that do not need App state live in subpackages: `internal/ui/actions`
+  for open-folder/editor/terminal commands and `internal/ui/trayicon` for tray icon
+  resource rendering.
 - **macOS native helpers** (`native_darwin.go`, cgo). Fyne exposes no window
   positioning, transparency, or focus-lost callback, so a small Cocoa shim:
   positions the popover under the cursor at the top of the screen, rounds the

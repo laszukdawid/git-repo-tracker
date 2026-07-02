@@ -12,9 +12,11 @@ import (
 // that shows a small label near a target widget on hover. Fyne 2.7 has no
 // built-in tooltips, and unlike widget.PopUp this never captures clicks.
 type tooltipLayer struct {
-	obj  *fyne.Container // without-layout, sits at the top of the content stack
-	bg   *canvas.Rectangle
-	text *canvas.Text
+	obj       *fyne.Container // without-layout, sits at the top of the content stack
+	bg        *canvas.Rectangle
+	text      *canvas.Text
+	shownText string
+	shownFor  fyne.CanvasObject
 }
 
 func newTooltipLayer(pal palette) *tooltipLayer {
@@ -41,6 +43,11 @@ func (t *tooltipLayer) show(text string, target fyne.CanvasObject) {
 	if text == "" {
 		return
 	}
+	if t.obj.Visible() && t.shownText == text && t.shownFor == target {
+		return
+	}
+	t.shownText = text
+	t.shownFor = target
 	t.text.Text = text
 	ts := fyne.MeasureText(text, t.text.TextSize, t.text.TextStyle)
 	const padX, padY, gap = float32(8), float32(4), float32(3)
@@ -78,6 +85,8 @@ func (t *tooltipLayer) show(text string, target fyne.CanvasObject) {
 }
 
 func (t *tooltipLayer) hide() {
+	t.shownText = ""
+	t.shownFor = nil
 	if t.obj.Visible() {
 		t.obj.Hide()
 	}

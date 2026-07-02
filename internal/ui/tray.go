@@ -2,17 +2,28 @@ package ui
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
+	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/theme"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 )
 
 // rebuildTray reconstructs the whole tray menu from the current snapshot. Fyne
 // has no incremental menu update, so we replace the menu wholesale; this is
 // cheap and keeps labels perfectly in sync with state.
 func (a *App) rebuildTray() {
+	if runtime.GOOS == "linux" && a.trayBuilt {
+		return
+	}
+	if a.trayOpen {
+		a.trayDirty = true
+		return
+	}
+
 	snap := a.mgr.Snapshot()
 	var updatable []monitor.RepoState
 	for _, r := range snap {
@@ -26,7 +37,10 @@ func (a *App) rebuildTray() {
 
 	header := fyne.NewMenuItem(fmt.Sprintf("%d repos · %d behind", len(snap), len(updatable)), nil)
 	header.Disabled = true
-	items := []*fyne.MenuItem{header, fyne.NewMenuItemSeparator()}
+	search := fyne.NewMenuItem("Search in Browse Repos...", nil)
+	search.Icon = theme.SearchIcon()
+	search.Disabled = true
+	items := []*fyne.MenuItem{header, search, fyne.NewMenuItemSeparator()}
 
 	switch {
 	case len(snap) == 0:
@@ -38,41 +52,84 @@ func (a *App) rebuildTray() {
 		ok.Disabled = true
 		items = append(items, ok)
 	default:
-		shown := updatable
+		shown := append([]monitor.RepoState(nil), snap...)
+		sortRepos(shown, sortBehind)
 		if len(shown) > maxTrayRepos {
 			shown = shown[:maxTrayRepos]
 		}
 		for _, r := range shown {
 			r := r
-			items = append(items, fyne.NewMenuItem(trayLabel(r), func() { a.activate(r) }))
+			item := fyne.NewMenuItem(trayLabel(r), func() { a.activate(r) })
+			item.Icon = trayMenuIcon(r)
+			items = append(items, item)
 		}
-		if len(updatable) > maxTrayRepos {
-			rest := fyne.NewMenuItem(fmt.Sprintf("…and %d more", len(updatable)-maxTrayRepos),
-				func() { a.showWindow() })
+		if len(snap) > maxTrayRepos {
+			rest := fyne.NewMenuItem(fmt.Sprintf("...and %d more", len(snap)-maxTrayRepos),
+				func() { fyne.Do(a.showWindow) })
+			rest.Icon = theme.MoreHorizontalIcon()
 			items = append(items, rest)
 		}
 	}
 
 	items = append(items,
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Browse Repos…", func() { a.showWindow() }),
-		fyne.NewMenuItem("Refresh Now", func() { a.mgr.Refresh() }),
-		fyne.NewMenuItem("Settings…", a.showSettings),
+		fyne.NewMenuItem("Browse Repos...", func() { fyne.Do(a.showWindow) }),
+		fyne.NewMenuItem("Refresh Now", a.refreshFromTray),
+		fyne.NewMenuItem("Settings...", func() { fyne.Do(a.showSettings) }),
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Open Config File…", a.openConfigInEditor),
-		fyne.NewMenuItem("Reload Config", a.reloadConfig),
+		fyne.NewMenuItem("Open Config File...", a.openConfigInEditor),
+		fyne.NewMenuItem("Reload Config", func() { fyne.Do(a.reloadConfig) }),
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Quit", a.quit),
+		fyne.NewMenuItem("Quit", func() { fyne.Do(a.quit) }),
 	)
 
 	a.desk.SetSystemTrayMenu(fyne.NewMenu("Git Repos", items...))
+	if runtime.GOOS == "linux" {
+		a.trayBuilt = true
+	}
 }
 
-// trayLabel renders an updatable repo as "name  ↓behind  +adds/-dels".
+func (a *App) refreshFromTray() {
+	if runtime.GOOS == "linux" {
+		a.trayBuilt = false
+	}
+	a.mgr.Refresh()
+	a.refresh()
+}
+
+// trayLabel renders one repo as a compact native-menu row. Native tray menus are
+// text-only layouts, so this approximates the rich browser row with name, branch,
+// behind count and dirty/error markers.
 func trayLabel(r monitor.RepoState) string {
-	s := fmt.Sprintf("%s  ↓%d", r.Name, r.Behind)
+	branch := strings.TrimSpace(r.Branch)
+	if branch == "" {
+		branch = "-"
+	}
+	s := fmt.Sprintf("%s  %s", r.Name, branch)
+	if r.Behind > 0 {
+		s += fmt.Sprintf("  ↓%d", r.Behind)
+	}
+	if r.Ahead > 0 {
+		s += fmt.Sprintf("  ↑%d", r.Ahead)
+	}
+	if r.Dirty {
+		s += "  dirty"
+	}
 	if r.LinesAdded > 0 || r.LinesDeleted > 0 {
 		s += fmt.Sprintf("  +%d/-%d", r.LinesAdded, r.LinesDeleted)
 	}
 	return s
+}
+
+func trayMenuIcon(r monitor.RepoState) fyne.Resource {
+	switch {
+	case r.Err != "" || r.FetchErr != "":
+		return theme.ErrorIcon()
+	case r.Dirty:
+		return theme.WarningIcon()
+	case r.Behind > 0:
+		return theme.DownloadIcon()
+	default:
+		return theme.ConfirmIcon()
+	}
 }

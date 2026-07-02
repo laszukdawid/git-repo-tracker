@@ -1,4 +1,4 @@
-package ui
+package actions
 
 import (
 	"fmt"
@@ -6,16 +6,16 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/git"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/git"
 )
 
-// runAction performs the configured click action for a repository directory. The
+// Run performs the configured click action for a repository directory. The
 // process gets a PATH augmented to match a desktop session (via git.Env), so
 // helpers like `open`, `code` or `xdg-open` resolve even when the app was started
 // from Finder or a login item.
-func runAction(action, custom, path string) error {
-	cmd, err := actionCommand(action, custom, path)
+func Run(action, custom, path string) error {
+	cmd, err := Command(action, custom, path)
 	if err != nil {
 		return err
 	}
@@ -23,7 +23,7 @@ func runAction(action, custom, path string) error {
 	return cmd.Start()
 }
 
-func actionCommand(action, custom, path string) (*exec.Cmd, error) {
+func Command(action, custom, path string) (*exec.Cmd, error) {
 	switch action {
 	case config.ActionTerminal:
 		return terminalCommand(path), nil
@@ -64,9 +64,8 @@ func terminalCommand(path string) *exec.Cmd {
 	case "darwin":
 		return exec.Command("open", "-a", "Terminal", path)
 	case "windows":
-		// Open a new console *with its working directory set* rather than building
-		// a `cd /d <path>` shell string — that would let special characters in the
-		// path inject extra commands.
+		// Open a new console with its working directory set rather than building a
+		// shell string that would re-interpret special characters in the path.
 		c := exec.Command("cmd", "/c", "start", "cmd")
 		c.Dir = path
 		return c

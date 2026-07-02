@@ -32,6 +32,7 @@ nav:
   - Home: index.md
   - Configuration: CONFIGURATION.md
   - Architecture: ARCHITECTURE.md
+  - GNOME Extension: GNOME_EXTENSION.md
 
 markdown_extensions:
   - admonition

@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/git"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/scan"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/git"
+	"github.com/laszukdawid/git-repo-tracker/internal/scan"
 )
 
 const (
@@ -151,6 +151,14 @@ func (m *Manager) Refresh() {
 	case m.trigger <- struct{}{}:
 	default: // a refresh is already queued
 	}
+}
+
+// RefreshNow performs a synchronous discovery + status pass for headless callers.
+// When withFetch is true it also runs fetch for roots that allow it. The UI should
+// keep using Refresh so it never blocks the main thread.
+func (m *Manager) RefreshNow(withFetch bool) {
+	m.discover()
+	m.refreshAll(withFetch)
 }
 
 // Pull fast-forwards a repo to its upstream and refreshes its status. It blocks

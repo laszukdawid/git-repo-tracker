@@ -3,13 +3,15 @@ package ui
 import (
 	"bytes"
 	"image/png"
+	"runtime"
 	"testing"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui/trayicon"
 )
 
 func TestRepoGlyph(t *testing.T) {
@@ -118,23 +120,29 @@ func TestHumanizeTime(t *testing.T) {
 
 func TestFmtBadge(t *testing.T) {
 	for in, want := range map[int]string{0: "0", 7: "7", 99: "99", 100: "99+", 250: "99+"} {
-		if got := fmtBadge(in); got != want {
+		if got := trayicon.FmtBadge(in); got != want {
 			t.Errorf("fmtBadge(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestUseSplashPopoverOnlyOnDarwin(t *testing.T) {
+	if got, want := useSplashPopover(), runtime.GOOS == "darwin"; got != want {
+		t.Errorf("useSplashPopover() = %v, want %v", got, want)
 	}
 }
 
 func TestTrayIconForTemplateVsColored(t *testing.T) {
 	// Synced/fetching must be a themed (template) resource so macOS tints it to the
 	// menu bar; attention states must be a plain (coloured) resource.
-	if _, ok := trayIconFor(traySynced, 0).(*theme.ThemedResource); !ok {
+	if _, ok := trayicon.Resource(trayicon.Synced, 0).(*theme.ThemedResource); !ok {
 		t.Errorf("synced tray icon is not a ThemedResource (would not template on macOS)")
 	}
-	if _, ok := trayIconFor(trayFetching, 0).(*theme.ThemedResource); !ok {
+	if _, ok := trayicon.Resource(trayicon.Fetching, 0).(*theme.ThemedResource); !ok {
 		t.Errorf("fetching tray icon is not a ThemedResource")
 	}
-	for _, st := range []trayState{trayBehind, trayDirty, trayError} {
-		res := trayIconFor(st, 14)
+	for _, st := range []trayicon.State{trayicon.Behind, trayicon.Dirty, trayicon.Error} {
+		res := trayicon.Resource(st, 14)
 		if _, ok := res.(*theme.ThemedResource); ok {
 			t.Errorf("state %d must be a coloured (non-template) resource, got ThemedResource", st)
 		}
@@ -142,16 +150,16 @@ func TestTrayIconForTemplateVsColored(t *testing.T) {
 }
 
 func TestCompositedIsValidPNG(t *testing.T) {
-	res := trayIconFor(trayBehind, 14)
+	res := trayicon.Resource(trayicon.Behind, 14)
 	img, err := png.Decode(bytes.NewReader(res.Content()))
 	if err != nil {
 		t.Fatalf("tray icon is not valid PNG: %v", err)
 	}
-	if b := img.Bounds(); b.Dx() != trayPx || b.Dy() != trayPx {
-		t.Errorf("tray icon size = %dx%d, want %dx%d", b.Dx(), b.Dy(), trayPx, trayPx)
+	if b := img.Bounds(); b.Dx() != trayicon.Px || b.Dy() != trayicon.Px {
+		t.Errorf("tray icon size = %dx%d, want %dx%d", b.Dx(), b.Dy(), trayicon.Px, trayicon.Px)
 	}
 	// The amber badge sits in the top-right; that pixel should be opaque.
-	if _, _, _, alpha := img.At(trayPx-6, 6).RGBA(); alpha == 0 {
+	if _, _, _, alpha := img.At(trayicon.Px-6, 6).RGBA(); alpha == 0 {
 		t.Errorf("expected an opaque badge pixel in the top-right corner")
 	}
 }

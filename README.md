@@ -45,8 +45,15 @@ Requires **Go 1.26+** and `git` on your `PATH`. On Debian/Ubuntu install the Fyn
 build dependencies first with `task linux-deps`.
 
 ```sh
-task run     # or: go run .
+task run     # or: go run ./cmd/git-repo-tracker
 task build   # produces ./git-repo-tracker
+```
+
+Headless/status CLI:
+
+```sh
+go run ./cmd/git-repo-tracker-cli status --json
+go run ./cmd/git-repo-tracker-cli status --refresh --json
 ```
 
 ## Usage
@@ -87,6 +94,7 @@ See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference
 
 - **[Configuration reference](docs/CONFIGURATION.md)** — every option, env vars, cache.
 - **[Architecture](docs/ARCHITECTURE.md)** — layering, concurrency, caching, the Fyne/cgo internals.
+- **[GNOME extension development](docs/GNOME_EXTENSION.md)** — optional Ubuntu/Fedora integration.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, build/test/release workflow, code layout.
 
 Run **`task docs`** to preview the site locally with

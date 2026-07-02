@@ -14,8 +14,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/loginitem"
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
+	"github.com/laszukdawid/git-repo-tracker/internal/loginitem"
 )
 
 // Settings layout metrics (option 1e).

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dawidlaszuk/git-repo-tracker/internal/config"
-	"github.com/dawidlaszuk/git-repo-tracker/internal/ui"
+	"github.com/laszukdawid/git-repo-tracker/internal/backend"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -30,13 +30,9 @@ func main() {
 		}
 	}
 
-	path, err := config.DefaultPath()
+	cfg, err := backend.LoadDefaultConfig()
 	if err != nil {
-		fatal("resolve config path: %v", err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		fatal("load config: %v", err)
+		fatal("%v", err)
 	}
 
 	app, err := ui.NewApp(cfg)

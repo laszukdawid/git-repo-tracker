@@ -1,0 +1,7 @@
+{
+  "uuid": "git-repo-tracker@laszukdawid.github.com",
+  "name": "Git Repo Tracker",
+  "description": "GNOME Shell frontend for git-repo-tracker",
+  "shell-version": ["45", "46", "47", "48", "49"],
+  "url": "https://github.com/laszukdawid/git-repo-tracker"
+}
