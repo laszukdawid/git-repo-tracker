@@ -36,7 +36,15 @@ const (
 // edits which directories to scan, the refresh cadences, the click action, the
 // theme and launch-at-login; saving persists the config and triggers a rescan.
 func (a *App) showSettings() {
+	if a.settingsWin != nil {
+		a.settingsWin.Show()
+		a.settingsWin.RequestFocus()
+		return
+	}
+
 	w := a.fyneApp.NewWindow("git-repo-tracker — Settings")
+	a.settingsWin = w
+	w.SetOnClosed(func() { a.settingsWin = nil })
 	w.Resize(fyne.NewSize(settingsWidth, settingsHeight))
 	tips := newTooltipLayer(a.pal)
 

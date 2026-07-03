@@ -67,6 +67,10 @@ type App struct {
 	// icon (see SetSystemTrayWindow in Run). It stays hidden until tapped.
 	win fyne.Window
 
+	// settingsWin is the single settings window instance, reused and focused when
+	// the user clicks Settings while it is already open.
+	settingsWin fyne.Window
+
 	// Appearance: pal holds the popover's custom colours and variant records which
 	// light/dark variant they were built for, so we can tell when the OS flipped.
 	pal     palette
