@@ -1,4 +1,13 @@
-# GNOME Extension Development
+# GNOME Extension
+
+The GNOME Shell extension is an optional Linux frontend, not the default Linux
+tray integration. The default Linux app is the Fyne desktop app with a compact
+native tray/AppIndicator menu and an **Open App** entry for the full searchable UI.
+The extension exists for users and contributors who want a GNOME-native panel
+menu instead.
+
+For the broader split between macOS, native Linux, and GNOME, see
+[Platform Integrations](PLATFORM_INTEGRATIONS.md).
 
 The optional GNOME frontend is a Shell extension in `integrations/gnome-shell/`.
 It renders the rich panel menu with GNOME Shell widgets and gets repo state from
@@ -9,7 +18,13 @@ GNOME Shell extension -> git-repo-tracker-cli status --json -> internal/backend 
 ```
 
 This is intentionally separate from the Fyne app. AppIndicator/native tray menus
-cannot host a searchable, expandable, live-updating UI; GNOME Shell extensions can.
+are reliable for a compact status menu, but they are a poor fit for searchable,
+expandable, live-updating UI. GNOME Shell extensions can render that kind of panel
+experience with Shell-native widgets.
+
+The extension boundary is the CLI, not an internal Go package import. That keeps
+the JavaScript extension small and lets the Go backend remain the single source of
+truth for config, discovery, refresh behavior, and cache state.
 
 ## Prerequisites
 

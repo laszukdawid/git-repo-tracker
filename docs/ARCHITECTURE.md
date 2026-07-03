@@ -1,17 +1,20 @@
 # Architecture
 
 `git-repo-tracker` is a Go repo-tracking backend with platform frontends. The
-current desktop frontend is a [Fyne](https://fyne.io) v2 tray app; a headless CLI
-uses the same backend, and Linux/GNOME can grow a Shell-extension frontend on top
-of the same service boundary. State flows one way: **discover → refresh → cache →
-notify the frontend**.
+primary desktop frontend is a [Fyne](https://fyne.io) v2 tray app; a headless CLI
+uses the same backend; and the optional GNOME Shell extension renders a separate
+GNOME-native panel frontend on top of the CLI boundary. State flows one way:
+**discover → refresh → cache → notify the frontend**.
+
+For the user-facing split between macOS, native Linux, and GNOME, see
+[Platform Integrations](PLATFORM_INTEGRATIONS.md).
 
 ## Layers
 
 | Layer | Package(s) | Responsibility |
 |-------|-----------|----------------|
-| Frontends | `cmd/git-repo-tracker`, `cmd/git-repo-tracker-cli`, `internal/ui` | Native Fyne app and headless CLI entrypoints |
-| Optional integrations | `integrations/gnome-shell` | GNOME Shell panel frontend; shells out to the CLI and can move to a separate repo |
+| Frontends | `cmd/git-repo-tracker`, `cmd/git-repo-tracker-cli`, `internal/ui` | Fyne desktop app and headless CLI entrypoints |
+| Optional integrations | `integrations/gnome-shell` | GNOME Shell panel frontend; shells out to the CLI |
 | Backend | `internal/backend` | Shared service boundary over config + monitor for GUI, CLI, and future platform frontends |
 | GUI | `internal/ui` | Tray menu, search popover, settings window, theme, tooltips, click actions; macOS-native bits (cgo) |
 | Daemon | `internal/monitor` | Repo registry, the refresh schedulers, bounded worker pool, debounced change notifications, on-disk cache |
@@ -20,10 +23,11 @@ notify the frontend**.
 | Platform | `internal/loginitem` | Launch-at-login (macOS LaunchAgent / Linux XDG autostart) |
 
 `cmd/git-repo-tracker` wires version/flags → loads backend config → constructs `ui.App` → runs.
+On macOS that app adds a small Cocoa bridge for menu-bar behavior. On Linux it
+uses the native tray/AppIndicator path for a compact menu plus a full Fyne window.
 `cmd/git-repo-tracker-cli` uses `internal/backend` without importing Fyne. The
 GNOME Shell extension shells out to that CLI and renders GNOME-native panel menu
-widgets, which is how it can support expandable sections and live updates on
-Ubuntu/Fedora without AppIndicator limitations.
+widgets, which is how it can support richer panel UI without AppIndicator limits.
 
 Layers communicate through a **single `onChange` callback**, not channels: the
 monitor calls `onChange` when state changes; the UI marshals that onto Fyne's

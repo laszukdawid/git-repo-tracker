@@ -9,6 +9,21 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
   <img src="media/demo.gif" alt="git-repo-tracker in action" width="440">
 </p>
 
+## How It Fits Together
+
+`git-repo-tracker` has a shared Go backend and platform-specific frontends. The
+backend discovers repositories, refreshes git state, caches snapshots, and applies
+config. The frontend decides how that state appears on your desktop.
+
+On macOS, the packaged app is a menu-bar utility with a Fyne UI and small Cocoa
+helpers for native popover behavior. On Linux, the primary app uses the desktop's
+tray/AppIndicator support for a compact native menu and opens the full Fyne UI for
+search, settings, and repo actions. GNOME users can optionally run a separate
+Shell extension that renders a GNOME-native panel menu powered by the same
+headless CLI/backend.
+
+See [Platform Integrations](PLATFORM_INTEGRATIONS.md) for the full split.
+
 ## Features
 
 - **Discovery** — recursively finds every git repo under your roots, pruned so
@@ -29,7 +44,9 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
 </p>
 
 On Linux, the native AppIndicator menu stays intentionally modest: it lists repos
-that are behind and provides **Open App** for the full searchable UI.
+that are behind and provides **Open App** for the full searchable UI. The optional
+GNOME extension is a separate Shell-native frontend for users who want a richer
+GNOME panel menu.
 
 ## Install
 
@@ -64,6 +81,7 @@ task build   # produces ./git-repo-tracker
 ## Where next
 
 - **[Configuration](CONFIGURATION.md)** — every option, environment variables, the cache.
+- **[Platform Integrations](PLATFORM_INTEGRATIONS.md)** — macOS, native Linux, and GNOME frontend split.
 - **[Architecture](ARCHITECTURE.md)** — layering, concurrency, caching, and the Fyne/cgo internals.
 - Contributing & agent notes live at the repo root
   ([CONTRIBUTING.md](https://github.com/laszukdawid/git-repo-tracker/blob/main/CONTRIBUTING.md),
