@@ -42,6 +42,9 @@ Architecture, data flow, and threading model: **docs/ARCHITECTURE.md**.
 
 ## Conventions & gotchas (read before editing the UI)
 
+- **Comments:** favour self-documenting code. Add a comment only for the non-obvious
+  *why* (a gotcha, a subtle interaction) — never to narrate *what* the next line
+  does. Keep them short.
 - **Layering is one-way:** UI → `monitor` → `git`/`scan`. Only `config` and
   `monitor` touch disk. Never do git or filesystem work in the UI layer or inline
   in a click handler — it belongs in the monitor's goroutines/worker pool.

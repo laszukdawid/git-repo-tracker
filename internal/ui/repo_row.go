@@ -138,7 +138,12 @@ type repoRow struct {
 	marquees  []*marqueeText // scrollable detail lines (path + commit messages)
 	tips      *tooltipLayer
 
-	hovered bool
+	// Two sources because the detail lines are themselves Hoverable: selfHovered is
+	// the pointer on the row body, detailHovered on a detail line. Either keeps the
+	// row hovered (and its chips visible).
+	hovered       bool
+	selfHovered   bool
+	detailHovered bool
 
 	onExpand func(monitor.RepoState)
 	onPull   func(monitor.RepoState)
@@ -186,7 +191,7 @@ func (r *repoRow) Configure(repo monitor.RepoState, expanded, pulling bool, deta
 	onExpand, onPull, onOpen func(monitor.RepoState)) {
 
 	if r.repo.Path != repo.Path {
-		r.setHovered(false)
+		r.resetHover()
 	}
 	r.repo = repo
 	r.expanded = expanded
@@ -310,6 +315,9 @@ func (r *repoRow) clearMarquees() {
 		m.stopAnim()
 	}
 	r.marquees = nil
+	// Detail lines are gone; clear the flag so a rebuild mid-hover can't wedge the
+	// row "hovered".
+	r.detailHovered = false
 }
 
 func (r *repoRow) rebuildDetail(d *monitor.Details) {
@@ -380,6 +388,7 @@ func (r *repoRow) addCommit(hash string, t time.Time, msg string) {
 // line builds a detail line; scrollable ones are tracked so hover can animate them.
 func (r *repoRow) line(s string, col color.Color, size float32, bold, mono, scrollable bool) *marqueeText {
 	m := newMarquee(s, col, size, bold, mono)
+	m.onHover = r.setDetailHovered
 	if scrollable {
 		r.marquees = append(r.marquees, m)
 	}
@@ -427,7 +436,8 @@ func (r *repoRow) Tapped(*fyne.PointEvent) {
 }
 
 func (r *repoRow) MouseIn(ev *desktop.MouseEvent) {
-	r.setHovered(true)
+	r.selfHovered = true
+	r.recomputeHover()
 	r.MouseMoved(ev)
 }
 
@@ -457,16 +467,40 @@ func (r *repoRow) MouseMoved(ev *desktop.MouseEvent) {
 	}
 }
 
+// MouseOut also fires when the pointer crosses onto a detail line (a Hoverable
+// child), so it clears only the body's hover — detailHovered may keep the row hovered.
 func (r *repoRow) MouseOut() {
 	r.pullBtn.setHovered(false)
 	r.openBtn.setHovered(false)
 	if r.tips != nil {
 		r.tips.hide()
 	}
-	r.setHovered(false)
+	r.selfHovered = false
+	r.recomputeHover()
 }
 
-func (r *repoRow) setHovered(h bool) {
+// setDetailHovered is called by the detail lines as the pointer enters/leaves them.
+func (r *repoRow) setDetailHovered(h bool) {
+	if r.detailHovered == h {
+		return
+	}
+	r.detailHovered = h
+	r.recomputeHover()
+}
+
+// resetHover clears all hover sources; used when a recycled row is rebound.
+func (r *repoRow) resetHover() {
+	r.pullBtn.setHovered(false)
+	r.openBtn.setHovered(false)
+	r.selfHovered = false
+	r.detailHovered = false
+	r.recomputeHover()
+}
+
+// recomputeHover folds the two hover sources into the effective state, refreshing
+// only on a real change.
+func (r *repoRow) recomputeHover() {
+	h := r.selfHovered || r.detailHovered
 	if r.hovered == h {
 		return
 	}

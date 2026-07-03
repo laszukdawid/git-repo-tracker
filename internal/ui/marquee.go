@@ -45,6 +45,10 @@ type marqueeText struct {
 	dragging bool    // being dragged → pause
 	px       float32 // scroll offset in points (into the loop; wraps)
 	anim     *fyne.Animation
+
+	// onHover lets the parent row stay "hovered" while the pointer is on a detail
+	// line; without it this Hoverable line steals hover and hides the row's chips.
+	onHover func(bool)
 }
 
 func newMarquee(s string, col color.Color, size float32, bold, mono bool) *marqueeText {
@@ -183,11 +187,17 @@ func (m *marqueeText) maxDragPx() float32 {
 
 func (m *marqueeText) MouseIn(*desktop.MouseEvent) {
 	m.hovered = true
+	if m.onHover != nil {
+		m.onHover(true)
+	}
 	m.update()
 }
 func (m *marqueeText) MouseMoved(*desktop.MouseEvent) {}
 func (m *marqueeText) MouseOut() {
 	m.hovered = false
+	if m.onHover != nil {
+		m.onHover(false)
+	}
 	m.update()
 }
 
