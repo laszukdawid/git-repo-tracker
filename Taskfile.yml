@@ -73,7 +73,9 @@ tasks:
   bundle:
     desc: 'Build git-repo-tracker.app into ./dist (same bundle the release ships: menu-bar agent)'
     cmds:
-      - go build -trimpath -ldflags "-s -w -X main.version=dev" -o dist/{{.BIN}} ./cmd/{{.BIN}}
+      # MACOSX_DEPLOYMENT_TARGET pins the minimum macOS so the bundle runs on older
+      # systems (e.g. Sequoia), not just the SDK version of the build machine.
+      - MACOSX_DEPLOYMENT_TARGET=11.0 go build -trimpath -ldflags "-s -w -X main.version=dev" -o dist/{{.BIN}} ./cmd/{{.BIN}}
       - build/macos/package-app.sh --binary dist/{{.BIN}} --version dev --out dist
       - 'echo "Built dist/{{.BIN}}.app — try: open dist/{{.BIN}}.app"'
 
