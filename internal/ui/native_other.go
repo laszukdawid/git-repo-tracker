@@ -13,3 +13,11 @@ func resizePopover(title string, width, height float32) {}
 
 // watchPopoverAutoHide is a no-op off macOS.
 func watchPopoverAutoHide(hide func()) {}
+
+// setMenuBarAgent is a no-op off macOS. Hiding the Dock icon is a macOS concept;
+// Linux/Windows tray behaviour is left to the host.
+func setMenuBarAgent() {}
+
+// activateApp is a no-op off macOS; the host window manager handles focusing a
+// newly shown window.
+func activateApp() {}

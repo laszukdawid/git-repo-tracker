@@ -71,9 +71,11 @@ tasks:
       - go install fyne.io/tools/cmd/fyne@latest
 
   bundle:
-    desc: 'Produce a macOS .app bundle (run `task install-fyne` first; needs icon.png)'
+    desc: 'Build git-repo-tracker.app into ./dist (same bundle the release ships: menu-bar agent)'
     cmds:
-      - fyne package -os darwin --name "{{.APP_NAME}}" --app-id {{.APP_ID}} --icon icon.png
+      - go build -trimpath -ldflags "-s -w -X main.version=dev" -o dist/{{.BIN}} ./cmd/{{.BIN}}
+      - build/macos/package-app.sh --binary dist/{{.BIN}} --version dev --out dist
+      - 'echo "Built dist/{{.BIN}}.app — try: open dist/{{.BIN}}.app"'
 
   linux-deps:
     desc: 'Install the Fyne build dependencies on Debian/Ubuntu'

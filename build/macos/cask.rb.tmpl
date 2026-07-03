@@ -1,0 +1,49 @@
+# Homebrew cask for git-repo-tracker. Rendered by the release workflow, which
+# fills in the version and checksum below and pushes the result to
+# laszukdawid/homebrew-tap (see .github/workflows/release.yml). DO NOT EDIT the
+# copy in the tap by hand — regenerate from this template.
+cask "git-repo-tracker" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/laszukdawid/git-repo-tracker/releases/download/v#{version}/git-repo-tracker_Darwin_universal.zip"
+  name "git-repo-tracker"
+  desc "System-tray tracker for local git repositories"
+  homepage "https://github.com/laszukdawid/git-repo-tracker"
+
+  depends_on macos: :big_sur
+
+  app "git-repo-tracker.app"
+
+  # The app is not code-signed or notarized. Strip the Gatekeeper quarantine flag
+  # off the installed bundle so it launches without an "unidentified developer"
+  # prompt. (One universal build covers both Intel and Apple Silicon.)
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/git-repo-tracker.app"]
+  end
+
+  uninstall quit: "com.github.laszukdawid.git-repo-tracker"
+
+  zap trash: [
+    "~/Library/Application Support/git-repo-tracker",
+    "~/Library/Caches/git-repo-tracker",
+    "~/Library/LaunchAgents/com.github.laszukdawid.git-repo-tracker.plist",
+    "~/Library/Preferences/fyne/com.github.laszukdawid.git-repo-tracker",
+  ]
+
+  caveats <<~EOS
+    git-repo-tracker is a menu-bar app — it has no Dock icon and no main window.
+
+    Launch it like any other app: open it from Launchpad or Spotlight (search
+    "git-repo-tracker"), or from a terminal with:
+      open -a git-repo-tracker
+
+    Then look for its icon in the menu bar (top-right of the screen). Left-click
+    it for the search popover; right-click for the menu. To start it automatically
+    at login, turn on "Launch at login" in the in-app Settings.
+
+    Config lives at:
+      ~/Library/Application Support/git-repo-tracker/config.yaml
+  EOS
+end

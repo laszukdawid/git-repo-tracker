@@ -39,6 +39,14 @@ that are behind and provides **Open App** for the full searchable UI.
 brew install --cask laszukdawid/tap/git-repo-tracker
 ```
 
+This installs **git-repo-tracker.app** into `/Applications`. It's a menu-bar app
+(no Dock icon, no main window), so **launch it once** from Launchpad/Spotlight or
+with `open -a git-repo-tracker`; its icon then appears in the menu bar and it
+keeps running in the background. Turn on **Launch at login** in the in-app
+**Settings** (☰ in the popover header) so it starts with you automatically. The
+cask strips the Gatekeeper quarantine flag, so the unsigned app opens without an
+"unidentified developer" prompt.
+
 ### From source
 
 Requires **Go 1.26+** and `git`. On Debian/Ubuntu, `task linux-deps` first.

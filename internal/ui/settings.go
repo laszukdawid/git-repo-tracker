@@ -181,6 +181,9 @@ func (a *App) showSettings() {
 	w.SetContent(tips.wrap(container.NewBorder(nil, footer, nil, nil, body)))
 	w.Show()
 	w.RequestFocus()
+	// As a menu-bar agent the app isn't auto-activated when Settings is opened from
+	// the status-bar menu, so surface the window explicitly (no-op off macOS).
+	activateApp()
 }
 
 // dirRow builds one scanned-directory row: a path entry (flex), a fixed-width depth

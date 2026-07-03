@@ -1,13 +1,17 @@
 # GoReleaser config for git-repo-tracker.
 # Documentation: https://goreleaser.com
 #
-# Publishes prebuilt macOS binaries on a version tag and updates the
-# laszukdawid/homebrew-tap Homebrew cask. The cask's post-install hook strips the
-# Gatekeeper quarantine attribute so the unsigned binary runs without an
-# "unidentified developer" prompt (no Apple notarization needed). Fyne is a CGO
-# app, so this must run on a macOS runner (no Linux cross-compile); the amd64
-# slice is cross-built from the arm64 runner via `clang -arch x86_64`. Linux
-# archives are built separately on a Linux runner (see .github/workflows).
+# On a version tag this builds the macOS app (arm64 + amd64), lipo-merges the two
+# slices into a single universal binary, and publishes it to a GitHub release.
+# Fyne is a CGO app, so this must run on a macOS runner (no Linux cross-compile);
+# the amd64 slice is cross-built from the arm64 runner via `clang -arch x86_64`.
+#
+# The universal binary is then wrapped into `git-repo-tracker.app` and pushed to
+# the laszukdawid/homebrew-tap cask by the release workflow — NOT here. Building
+# a real .app bundle and generating a Homebrew *cask* with an `app` stanza both
+# require GoReleaser Pro, so those two steps live in .github/workflows/release.yml
+# (see build/macos/package-app.sh and build/macos/cask.rb.tmpl) to keep the
+# toolchain free. Linux archives are built separately on a Linux runner.
 version: 2
 
 project_name: git-repo-tracker
@@ -44,17 +48,24 @@ builds:
       - -s -w
       - -X main.version={{ .Version }}
 
+# Merge the arm64 + amd64 slices into one universal binary. The release workflow
+# wraps this single artifact into git-repo-tracker.app, so one cask covers both
+# Intel and Apple Silicon Macs.
+universal_binaries:
+  - id: git-repo-tracker
+    ids:
+      - git-repo-tracker
+    replace: true # drop the per-arch binaries; keep only the universal one
+
 archives:
   - id: git-repo-tracker
     ids:
       - git-repo-tracker
     formats:
       - tar.gz
-    name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else }}{{ .Arch }}{{ end }}
+    # Universal binary → arch is "all"; name it clearly so the raw-binary download
+    # is distinct from the .app zip the workflow uploads.
+    name_template: "{{ .ProjectName }}_Darwin_universal"
 
 checksum:
   name_template: "checksums.txt"
@@ -82,32 +93,7 @@ release:
   mode: keep-existing # leave Linux assets uploaded by the separate Linux job intact
   name_template: "{{ .ProjectName }} v{{ .Version }}"
 
-homebrew_casks:
-  - name: git-repo-tracker
-    ids:
-      - git-repo-tracker
-    binaries:
-      - git-repo-tracker
-    repository:
-      owner: laszukdawid
-      name: homebrew-tap
-      branch: main
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/laszukdawid/git-repo-tracker"
-    description: "System-tray tracker for local git repositories"
-    commit_msg_template: "Cask update for {{ .ProjectName }} version {{ .Tag }}"
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/git-repo-tracker"]
-    caveats: |
-      git-repo-tracker is a system-tray app — it has no main window.
-      Start it with:
-        git-repo-tracker
-      then look for the icon in the menu bar. Left-click it for the search
-      popover, right-click for the menu.
-
-      Config lives at:
-        ~/Library/Application Support/git-repo-tracker/config.yaml
-    # Only push the cask on real tag releases, not snapshots/prereleases.
-    skip_upload: auto
+# NOTE: The Homebrew cask is NOT generated here. GoReleaser OSS can only emit a
+# `binary` cask, but git-repo-tracker ships as a .app bundle. The release workflow
+# renders build/macos/cask.rb.tmpl (an `app` cask) and pushes it to the tap after
+# uploading the .app zip. See .github/workflows/release.yml.

@@ -1,15 +1,18 @@
 # Builds release artifacts on a version tag:
-#   - macOS (arm64 + amd64) via GoReleaser, plus a Homebrew cask update.
+#   - macOS: GoReleaser builds a universal binary; a follow-up step wraps it into
+#     git-repo-tracker.app, uploads the .app zip, and updates the Homebrew cask.
 #   - Linux (amd64) archive, uploaded to the same GitHub release.
 #
 # macOS must build on a macOS runner because Fyne is a CGO app (no Linux
 # cross-compile); the amd64 slice is cross-built via `clang -arch x86_64`
-# (see .goreleaser.yaml). Linux likewise needs its own CGO build with GL/X11 dev
+# (see .goreleaser.yaml). The .app bundling + `app` cask are done with a script
+# rather than GoReleaser because both are GoReleaser Pro-only features
+# (see build/macos/). Linux likewise needs its own CGO build with GL/X11 dev
 # libraries, so it runs as a separate job on ubuntu.
 #
 # Required secret:
 #   HOMEBREW_TAP_GITHUB_TOKEN — PAT with `repo` scope on laszukdawid/homebrew-tap
-#                               so GoReleaser can commit the updated cask.
+#                               so the cask step can commit the updated cask.
 # GITHUB_TOKEN is provided automatically (creates the release, uploads assets).
 name: Release
 
@@ -43,7 +46,63 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # GoReleaser OSS can't build a .app bundle or an `app` cask (Pro-only), so
+      # wrap the universal binary ourselves, upload the zip, and refresh the cask.
+      - name: Package .app bundle and upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Guard against an unexpected tag shape before it reaches sed/plist templating.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::unexpected version '${VERSION}' from tag ${GITHUB_REF_NAME}"; exit 1
+          fi
+          BIN="$(jq -r '.[] | select(.type=="Binary" and .goarch=="all") | .path' dist/artifacts.json)"
+          if [ -z "$BIN" ] || [ ! -f "$BIN" ]; then
+            echo "::error::universal binary not found in dist/artifacts.json"; exit 1
+          fi
+          ZIP="dist/git-repo-tracker_Darwin_universal.zip"
+          build/macos/package-app.sh --binary "$BIN" --version "$VERSION" --out dist --zip "$ZIP"
+          gh release upload "${GITHUB_REF_NAME}" "$ZIP" --clobber
+
+      - name: Update Homebrew cask
+        env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_GITHUB_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set — cannot update the cask"; exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Skip prereleases (e.g. v1.2.3-rc1) — keep the stable cask untouched.
+          case "$VERSION" in
+            *-*) echo "prerelease ${VERSION}: leaving the stable cask unchanged"; exit 0 ;;
+          esac
+          ZIP="dist/git-repo-tracker_Darwin_universal.zip"
+          SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+          sed -e "s/__VERSION__/${VERSION}/g" -e "s/__SHA256__/${SHA}/g" \
+            build/macos/cask.rb.tmpl > /tmp/git-repo-tracker.rb
+          git clone --depth 1 --branch main --single-branch \
+            "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/laszukdawid/homebrew-tap.git" \
+            /tmp/homebrew-tap
+          cp /tmp/git-repo-tracker.rb /tmp/homebrew-tap/Casks/git-repo-tracker.rb
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/git-repo-tracker.rb
+          if git diff --cached --quiet; then
+            echo "cask already up to date"; exit 0
+          fi
+          git commit -m "Cask update for git-repo-tracker version ${GITHUB_REF_NAME}"
+          # Retry once against the latest tap main to survive a concurrent commit.
+          git push origin HEAD:main || {
+            echo "push rejected; rebasing on origin/main and retrying"
+            git fetch origin main
+            git rebase origin/main
+            git push origin HEAD:main
+          }
 
   linux:
     needs: goreleaser # upload into the release GoReleaser just created

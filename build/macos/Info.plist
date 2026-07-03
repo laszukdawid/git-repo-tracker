@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the git-repo-tracker macOS .app bundle.
+  build/macos/package-app.sh substitutes __VERSION__ at package time.
+  LSUIElement=true makes this a menu-bar agent: it lives in the tray with no
+  Dock icon and no main window.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>git-repo-tracker</string>
+    <key>CFBundleDisplayName</key>
+    <string>Git Repo Tracker</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.github.laszukdawid.git-repo-tracker</string>
+    <key>CFBundleExecutable</key>
+    <string>git-repo-tracker</string>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
