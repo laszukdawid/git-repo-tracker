@@ -148,7 +148,9 @@ wants; these are the non-obvious bits:
   (macOS `.app`), `icon` (regenerate `icon.png` from the SVG), `linux-deps`,
   `release-snapshot`.
 - **`.goreleaser.yaml`** — macOS arm64 + amd64 (CGO; amd64 cross-built via
-  `clang -arch x86_64`) → archives + a Homebrew cask.
+  `clang -arch x86_64`), lipo'd into one universal binary. The `.app` bundle and
+  Homebrew cask are packaged by the release workflow (`build/macos/`), not
+  GoReleaser (both are Pro-only there).
 - **`.github/workflows`** — `test-and-tag` (test on macOS + Linux, then bump &
-  push a SemVer tag from conventional commits) → `release` (GoReleaser + a Linux
-  amd64 archive).
+  push a SemVer tag from conventional commits) → `release` (GoReleaser universal
+  binary + `git-repo-tracker.app` cask + a Linux amd64 archive).

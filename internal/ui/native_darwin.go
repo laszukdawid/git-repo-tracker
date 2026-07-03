@@ -155,6 +155,30 @@ static void GRTApplyVibrancy(const char *title) {
 	});
 }
 
+// GRTSetMenuBarAgent removes the Dock icon at runtime by switching the process to
+// NSApplicationActivationPolicyAccessory. GLFW forces Regular during its AppKit
+// init, and the Info.plist's LSUIElement is ignored once that runs, so the switch
+// has to happen after the app has started (see the Lifecycle OnStarted hook).
+// Accessory apps still show and focus windows — the popover, Settings and browser
+// all keep working (the popover already calls activateIgnoringOtherApps:) — they
+// just no longer occupy a Dock tile, which is what a menu-bar utility wants.
+static void GRTSetMenuBarAgent(void) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+	});
+}
+
+// GRTActivateApp brings the app to the foreground so a window shown right now
+// (e.g. Settings) becomes key and visible. An accessory app is not auto-activated
+// when a window opens from the status-bar menu, so windows other than the popover
+// (which already activates in GRTPlacePopover) must request it explicitly, or they
+// can open behind whatever app is frontmost.
+static void GRTActivateApp(void) {
+	dispatch_async(dispatch_get_main_queue(), ^{
+		[NSApp activateIgnoringOtherApps:YES];
+	});
+}
+
 // grtAppResignedActive is the Go callback (defined via //export in a companion
 // file) invoked when the app loses active status.
 extern void grtAppResignedActive(void);
@@ -199,6 +223,20 @@ func resizePopover(title string, width, height float32) {
 	c := C.CString(title)
 	defer C.free(unsafe.Pointer(c))
 	C.GRTResizePopover(c, C.double(width), C.double(height))
+}
+
+// setMenuBarAgent switches the running app to accessory activation policy so it
+// lives only in the menu bar, with no Dock icon. GLFW sets Regular during init,
+// so this must run after the app has started.
+func setMenuBarAgent() {
+	C.GRTSetMenuBarAgent()
+}
+
+// activateApp brings the app to the foreground. Call it when opening a window
+// (Settings) so the accessory app surfaces it instead of leaving it behind the
+// frontmost application.
+func activateApp() {
+	C.GRTActivateApp()
 }
 
 // popoverAutoHide is invoked (on the main thread) when the app resigns active,

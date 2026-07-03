@@ -22,7 +22,7 @@ task check   # gofmt + go vet + go test    ← run before pushing
 task fmt     # gofmt -w .
 task vet     # go vet ./...
 task icon    # regenerate icon.png from internal/assets/icon.svg
-task bundle  # macOS .app bundle (after `task install-fyne`)
+task bundle  # build dist/git-repo-tracker.app (the release bundle) locally
 task docs    # serve the docs (MkDocs Material) at http://localhost:8000
 ```
 
@@ -83,7 +83,9 @@ and the threading/caching model.
 - Commit messages follow **Conventional Commits** (`feat:`, `fix:`, `chore:`,
   `feat!:` / `BREAKING CHANGE:` …). The `test-and-tag` workflow derives the
   version bump from them.
-- On a push to `main` that passes tests, CI tags a new SemVer release, which
-  triggers GoReleaser (macOS cask + Linux archive). You don't tag by hand.
+- On a push to `main` that passes tests, CI tags a new SemVer release. That tag
+  triggers the release workflow: GoReleaser builds a macOS universal binary, a
+  script wraps it into `git-repo-tracker.app` and refreshes the Homebrew cask,
+  and a Linux archive is built separately. You don't tag by hand.
 - Before opening a PR: `task check` (and `go test -race ./...` for concurrency
   changes).

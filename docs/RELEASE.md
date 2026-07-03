@@ -78,6 +78,30 @@ Expected native app build path:
 .github/workflows/release.yml -> ./cmd/git-repo-tracker
 ```
 
+### macOS `.app` bundle & Homebrew cask
+
+GoReleaser (OSS) only builds the **universal binary**. Building the `.app` bundle
+and generating an `app` Homebrew cask are GoReleaser Pro features, so they are
+done with a script in `.github/workflows/release.yml` instead:
+
+```text
+build/macos/package-app.sh   # wraps the binary in git-repo-tracker.app (LSUIElement)
+build/macos/Info.plist        # bundle metadata; __VERSION__ substituted at package time
+build/macos/icon.icns         # app icon (regenerate from icon.png with iconutil)
+build/macos/cask.rb.tmpl      # the app cask; __VERSION__/__SHA256__ filled in, pushed to the tap
+```
+
+Validate the whole macOS chain locally (no publishing, no tag):
+
+```sh
+goreleaser release --snapshot --clean          # builds the universal binary into ./dist
+task bundle                                     # or: build/macos/package-app.sh ... --out dist
+open dist/git-repo-tracker.app                  # confirm it launches as a menu-bar agent (no Dock icon)
+```
+
+Confirm the rendered cask is well-formed with `brew style` (run it against a copy
+placed under a tap's `Casks/` directory, where the cask RuboCop config applies).
+
 ## Platform Notes
 
 - macOS is the primary native tray experience: left-click opens the rich popover,
@@ -93,4 +117,6 @@ Expected native app build path:
 - Confirm `docs/` builds with `mkdocs build --strict`.
 - Confirm `config.example.yaml` matches documented config fields.
 - Confirm `go.mod` module path is `github.com/laszukdawid/git-repo-tracker`.
-- Confirm no generated `site/` output or local binaries are staged.
+- Confirm `build/macos/icon.icns` is current if `icon.png` changed.
+- Confirm `dist/git-repo-tracker.app` launches as a menu-bar agent (no Dock icon).
+- Confirm no generated `site/` or `dist/` output or local binaries are staged.

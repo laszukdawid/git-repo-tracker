@@ -36,8 +36,22 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
 brew install --cask laszukdawid/tap/git-repo-tracker
 ```
 
-The cask strips the Gatekeeper quarantine flag, so the unsigned binary runs
-without an "unidentified developer" prompt.
+This drops **git-repo-tracker.app** into `/Applications`. It's a menu-bar
+utility — no Dock icon and no main window — so after installing, **launch it once**:
+
+- open it from **Launchpad** or **Spotlight** (⌘-Space → type "git-repo-tracker"), or
+- run `open -a git-repo-tracker` in a terminal.
+
+Its icon then appears in the menu bar (top-right). **Left-click** it for the
+search popover, **right-click** for the menu. You don't need to keep a terminal
+open — it keeps running in the background on its own.
+
+To have it start automatically at login, turn on **Launch at login** in
+**Settings** (open the popover, click **☰**). Then you never have to launch it by
+hand again.
+
+The cask strips the Gatekeeper quarantine flag on install, so the unsigned app
+opens without an "unidentified developer" prompt (no Apple notarization needed).
 
 ### From source
 

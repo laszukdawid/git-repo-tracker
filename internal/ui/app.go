@@ -173,6 +173,10 @@ func (a *App) Run() {
 	// Dismiss the popover when the user clicks outside the app, like a real
 	// menu-bar popover.
 	watchPopoverAutoHide(a.onPopoverResign)
+	// Drop the Dock icon once the app has started: it's a menu-bar utility, and
+	// GLFW forces a Dock tile during init that only a runtime activation-policy
+	// switch can undo (see setMenuBarAgent). No-op off macOS.
+	a.fyneApp.Lifecycle().SetOnStarted(setMenuBarAgent)
 	a.mgr.Start()
 	a.fyneApp.Run()
 }
