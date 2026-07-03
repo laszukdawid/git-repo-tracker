@@ -86,3 +86,4 @@ task build   # produces ./git-repo-tracker
 - Contributing & agent notes live at the repo root
   ([CONTRIBUTING.md](https://github.com/laszukdawid/git-repo-tracker/blob/main/CONTRIBUTING.md),
   [AGENTS.md](https://github.com/laszukdawid/git-repo-tracker/blob/main/AGENTS.md)).
+
