@@ -108,6 +108,7 @@ See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference
 
 ## Documentation
 
+- **[Documentation site](https://laszukdawid.github.io/git-repo-tracker/)** — published with GitHub Pages.
 - **[Configuration reference](docs/CONFIGURATION.md)** — every option, env vars, cache.
 - **[Architecture](docs/ARCHITECTURE.md)** — layering, concurrency, caching, the Fyne/cgo internals.
 - **[GNOME extension development](docs/GNOME_EXTENSION.md)** — optional Ubuntu/Fedora integration.

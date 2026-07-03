@@ -1,5 +1,6 @@
 site_name: git-repo-tracker
 site_description: A fast, cross-platform system-tray tracker for local git repositories.
+site_url: https://laszukdawid.github.io/git-repo-tracker/
 repo_url: https://github.com/laszukdawid/git-repo-tracker
 repo_name: laszukdawid/git-repo-tracker
 docs_dir: docs
