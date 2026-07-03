@@ -1,30 +1,18 @@
 # GNOME Extension
 
-The GNOME Shell extension is an optional Linux frontend, not the default Linux
-tray integration. The default Linux app is the Fyne desktop app with a compact
-native tray/AppIndicator menu and an **Open App** entry for the full searchable UI.
-The extension exists for users and contributors who want a GNOME-native panel
-menu instead.
+The GNOME Shell extension is an optional Linux frontend, not the default Linux tray integration. The default Linux app is the Fyne desktop app with a compact native tray/AppIndicator menu and an **Open App** entry for the full searchable UI. The extension exists for users and contributors who want a GNOME-native panel menu instead.
 
-For the broader split between macOS, native Linux, and GNOME, see
-[Platform Integrations](PLATFORM_INTEGRATIONS.md).
+For the broader split between macOS, native Linux, and GNOME, see [Platform Integrations](PLATFORM_INTEGRATIONS.md).
 
-The optional GNOME frontend is a Shell extension in `integrations/gnome-shell/`.
-It renders the rich panel menu with GNOME Shell widgets and gets repo state from
-the headless Go CLI:
+The optional GNOME frontend is a Shell extension in `integrations/gnome-shell/`. It renders the rich panel menu with GNOME Shell widgets and gets repo state from the headless Go CLI:
 
 ```text
 GNOME Shell extension -> git-repo-tracker-cli status --json -> internal/backend -> monitor/git/scan
 ```
 
-This is intentionally separate from the Fyne app. AppIndicator/native tray menus
-are reliable for a compact status menu, but they are a poor fit for searchable,
-expandable, live-updating UI. GNOME Shell extensions can render that kind of panel
-experience with Shell-native widgets.
+This is intentionally separate from the Fyne app. AppIndicator/native tray menus are reliable for a compact status menu, but they are a poor fit for searchable, expandable, live-updating UI. GNOME Shell extensions can render that kind of panel experience with Shell-native widgets.
 
-The extension boundary is the CLI, not an internal Go package import. That keeps
-the JavaScript extension small and lets the Go backend remain the single source of
-truth for config, discovery, refresh behavior, and cache state.
+The extension boundary is the CLI, not an internal Go package import. That keeps the JavaScript extension small and lets the Go backend remain the single source of truth for config, discovery, refresh behavior, and cache state.
 
 ## Prerequisites
 
@@ -34,16 +22,13 @@ On Ubuntu/Debian:
 task gnome:deps
 ```
 
-That installs GNOME extension development tools such as `gnome-extensions` and
-`gjs`. Native Fyne app dependencies are installed separately with
-`task linux-deps`.
+That installs GNOME extension development tools such as `gnome-extensions` and `gjs`. Native Fyne app dependencies are installed separately with `task linux-deps`.
 
 You also need `node` for the syntax-only JavaScript check used by `task gnome:check`.
 
 ## First Install
 
-Build the CLI bridge and clean-install the extension into GNOME's user extension
-directory:
+Build the CLI bridge and clean-install the extension into GNOME's user extension directory:
 
 ```sh
 task gnome:install
@@ -63,28 +48,19 @@ Then enable it:
 task gnome:enable
 ```
 
-If GNOME does not see the extension yet, log out/in. On X11 you can often restart
-GNOME Shell with `Alt+F2`, type `r`, press Enter. On Wayland, log out/in is the
-reliable reload path.
+If GNOME does not see the extension yet, log out/in. On X11 you can often restart GNOME Shell with `Alt+F2`, type `r`, press Enter. On Wayland, log out/in is the reliable reload path.
 
-GNOME Shell 46 still exposes a `ReloadExtension` DBus method, but it returns
-`ReloadExtension is deprecated and does not work` on current Ubuntu sessions, so
-the development tasks do not rely on it. A new local extension may not appear in
-`gnome-extensions list` until the shell process restarts.
+GNOME Shell 46 still exposes a `ReloadExtension` DBus method, but it returns `ReloadExtension is deprecated and does not work` on current Ubuntu sessions, so the development tasks do not rely on it. A new local extension may not appear in `gnome-extensions list` until the shell process restarts.
 
 ## Development Loop
 
-After changing `integrations/gnome-shell/extension.js`, `stylesheet.css`,
-metadata, or the CLI/backend code:
+After changing `integrations/gnome-shell/extension.js`, `stylesheet.css`, metadata, or the CLI/backend code:
 
 ```sh
 task gnome:restart
 ```
 
-This disables the extension, rebuilds the CLI bridge, reinstalls a fresh packed
-extension bundle, and enables it again if the running Shell already knows about
-the UUID. If Shell reports that the extension does not exist, log out/in and run
-`task gnome:enable`.
+This disables the extension, rebuilds the CLI bridge, reinstalls a fresh packed extension bundle, and enables it again if the running Shell already knows about the UUID. If Shell reports that the extension does not exist, log out/in and run `task gnome:enable`.
 
 For JS syntax only:
 
@@ -137,15 +113,13 @@ By default the extension looks for:
 ~/.local/bin/git-repo-tracker-cli
 ```
 
-If you want to use a different binary, set `GIT_REPO_TRACKER_CLI` before GNOME
-Shell starts:
+If you want to use a different binary, set `GIT_REPO_TRACKER_CLI` before GNOME Shell starts:
 
 ```sh
 export GIT_REPO_TRACKER_CLI=/absolute/path/to/git-repo-tracker-cli
 ```
 
-For a persistent user-session variable, put it in a shell/session environment file
-that your display manager reads, then log out/in.
+For a persistent user-session variable, put it in a shell/session environment file that your display manager reads, then log out/in.
 
 ## Config And Cache
 
@@ -169,8 +143,7 @@ If these are not set, it uses the default Linux locations:
 task gnome:clean
 ```
 
-This disables the extension if possible and removes the installed development copy
-from `~/.local/share/gnome-shell/extensions/`.
+This disables the extension if possible and removes the installed development copy from `~/.local/share/gnome-shell/extensions/`.
 
 ## Troubleshooting
 
@@ -181,8 +154,7 @@ gnome-extensions list | grep git-repo-tracker
 gnome-extensions info git-repo-tracker@laszukdawid.github.com
 ```
 
-If enabling fails, check `metadata.json` shell-version compatibility and GNOME
-Shell logs.
+If enabling fails, check `metadata.json` shell-version compatibility and GNOME Shell logs.
 
 If the panel menu shows an error, verify the CLI works from the same user account:
 
@@ -196,5 +168,4 @@ If repo data is stale, force a backend refresh:
 ~/.local/bin/git-repo-tracker-cli status --refresh --json
 ```
 
-If the extension keeps old code, run `task gnome:restart`; if that still does not
-update it, log out/in to force GNOME Shell to reload extension modules.
+If the extension keeps old code, run `task gnome:restart`; if that still does not update it, log out/in to force GNOME Shell to reload extension modules.

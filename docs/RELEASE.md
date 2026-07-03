@@ -16,8 +16,7 @@ The headless CLI is built from:
 cmd/git-repo-tracker-cli
 ```
 
-The GNOME Shell frontend is optional and remains an integration in this repo for
-now:
+The GNOME Shell frontend is optional and remains an integration in this repo for now:
 
 ```text
 integrations/gnome-shell
@@ -80,9 +79,7 @@ Expected native app build path:
 
 ### macOS `.app` bundle & Homebrew cask
 
-GoReleaser (OSS) only builds the **universal binary**. Building the `.app` bundle
-and generating an `app` Homebrew cask are GoReleaser Pro features, so they are
-done with a script in `.github/workflows/release.yml` instead:
+GoReleaser (OSS) only builds the **universal binary**. Building the `.app` bundle and generating an `app` Homebrew cask are GoReleaser Pro features, so they are done with a script in `.github/workflows/release.yml` instead:
 
 ```text
 build/macos/package-app.sh   # wraps the binary in git-repo-tracker.app (LSUIElement)
@@ -99,17 +96,13 @@ task bundle                                     # or: build/macos/package-app.sh
 open dist/git-repo-tracker.app                  # confirm it launches as a menu-bar agent (no Dock icon)
 ```
 
-Confirm the rendered cask is well-formed with `brew style` (run it against a copy
-placed under a tap's `Casks/` directory, where the cask RuboCop config applies).
+Confirm the rendered cask is well-formed with `brew style` (run it against a copy placed under a tap's `Casks/` directory, where the cask RuboCop config applies).
 
 ## Platform Notes
 
-- macOS is the primary native tray experience: left-click opens the rich popover,
-  right-click shows the native repo menu.
-- Linux AppIndicator native menus are intentionally limited to outdated repos and
-  **Open App**. Search, settings and inline detail live in the app window.
-- GNOME Shell integration is optional and packaged separately from the native app;
-  it depends on `git-repo-tracker-cli`.
+- macOS is the primary native tray experience: left-click opens the rich popover, right-click shows the native repo menu.
+- Linux AppIndicator native menus are intentionally limited to outdated repos and **Open App**. Search, settings and inline detail live in the app window.
+- GNOME Shell integration is optional and packaged separately from the native app; it depends on `git-repo-tracker-cli`.
 
 ## Before Tagging
 

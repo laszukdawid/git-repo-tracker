@@ -1,10 +1,6 @@
 # Configuration
 
-Configuration is a YAML file. It's hand-editable and also editable in-app via
-**Settings**. On Linux, use the tray's **Open App** item first, then the Settings
-button in the app window. Changes made in Settings are written atomically;
-hand-edits take effect via **Reload Config** where that action is exposed, or by
-restarting the app.
+Configuration is a YAML file. It's hand-editable and also editable in-app via **Settings**. On Linux, use the tray's **Open App** item first, then the Settings button in the app window. Changes made in Settings are written atomically; hand-edits take effect via **Reload Config** where that action is exposed, or by restarting the app.
 
 ## File location
 
@@ -15,8 +11,7 @@ Resolved in this order:
    - **macOS:** `~/Library/Application Support/git-repo-tracker/config.yaml`
    - **Linux:** `~/.config/git-repo-tracker/config.yaml`
 
-On first launch, if no file exists, a starter config is written — seeded with a
-`~/projects` root if that directory exists.
+On first launch, if no file exists, a starter config is written — seeded with a `~/projects` root if that directory exists.
 
 ## Options
 
@@ -70,8 +65,7 @@ launchAtLogin: false
 | `customCommand` | string | `""` | Used only when `clickAction: custom` |
 | `launchAtLogin` | bool | `false` | Reflects the actual login-item state |
 
-A starter file is also checked in as
-[`config.example.yaml`](https://github.com/laszukdawid/git-repo-tracker/blob/main/config.example.yaml).
+A starter file is also checked in as [`config.example.yaml`](https://github.com/laszukdawid/git-repo-tracker/blob/main/config.example.yaml).
 
 ## Environment variables
 
@@ -83,13 +77,10 @@ A starter file is also checked in as
 
 ## State cache
 
-Discovered repos and their last-known status are stored **separately** from the
-config, as disposable JSON:
+Discovered repos and their last-known status are stored **separately** from the config, as disposable JSON:
 
-- Path: `GIT_REPO_TRACKER_CACHE` if set, else the OS cache dir
-  (`~/Library/Caches/git-repo-tracker/state.json` on macOS).
-- It exists so the UI can paint instantly on launch. Deleting it is harmless — it
-  is rebuilt on the next refresh.
+- Path: `GIT_REPO_TRACKER_CACHE` if set, else the OS cache dir (`~/Library/Caches/git-repo-tracker/state.json` on macOS).
+- It exists so the UI can paint instantly on launch. Deleting it is harmless — it is rebuilt on the next refresh.
 
 ## Custom command examples
 
@@ -104,6 +95,4 @@ customCommand: open -a "Visual Studio Code" {path}   # quoted app name (macOS)
 customCommand: idea                                  # no {path} → repo appended as last arg
 ```
 
-The command is executed directly (no shell), so there is no shell-injection
-surface; `{path}` is substituted into the argument list and quotes only group
-arguments.
+The command is executed directly (no shell), so there is no shell-injection surface; `{path}` is substituted into the argument list and quotes only group arguments.
