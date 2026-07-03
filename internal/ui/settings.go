@@ -20,7 +20,7 @@ import (
 
 // Settings layout metrics (option 1e).
 const (
-	settingsWidth  = 520
+	settingsWidth  = 430
 	settingsHeight = 560
 	cardRadius     = 11
 	cardPadX       = 15
@@ -28,6 +28,7 @@ const (
 	cardRowPadY    = 11
 	bodyPad        = 18
 	depthFieldW    = 56
+	numFieldW      = 80 // fixed width for the small min/sec number fields
 	labelColW      = 120
 )
 
@@ -36,9 +37,17 @@ const (
 // edits which directories to scan, the refresh cadences, the click action, the
 // theme and launch-at-login; saving persists the config and triggers a rescan.
 func (a *App) showSettings() {
+	// The popover floats at status-window level so it sits over other apps like a
+	// real menu-bar dropdown — which would also keep it above Settings. Dismiss it so
+	// Settings opens unobstructed.
+	if a.popVisible {
+		a.hidePopover()
+	}
+
 	if a.settingsWin != nil {
 		a.settingsWin.Show()
 		a.settingsWin.RequestFocus()
+		activateApp()
 		return
 	}
 
@@ -246,17 +255,21 @@ func (a *App) segmentedBar(labels []string, selected int, onSelect func(int)) fy
 }
 
 // formRow lays out a fixed-width, right-aligned label beside a flexing control.
+// The label is kept at its own height and vertically centered, so it lines up with
+// the control's centered text even when the control is taller (e.g. the Select).
 func (a *App) formRow(label string, control fyne.CanvasObject) *fyne.Container {
 	l := widget.NewLabelWithStyle(label, fyne.TextAlignTrailing, fyne.TextStyle{})
-	cell := container.New(layout.NewGridWrapLayout(fyne.NewSize(labelColW, control.MinSize().Height)), l)
-	return container.NewBorder(nil, nil, cell, nil, control)
+	cell := container.New(layout.NewGridWrapLayout(fyne.NewSize(labelColW, l.MinSize().Height)), l)
+	return container.NewBorder(nil, nil, container.NewCenter(cell), nil, control)
 }
 
-// suffixField pairs a number entry with a faint unit suffix (min / sec).
+// suffixField pairs a fixed-width number entry with a faint unit suffix (min / sec),
+// left-aligned so a two-digit value doesn't stretch a field across the whole row.
 func (a *App) suffixField(entry *widget.Entry, suffix string) fyne.CanvasObject {
 	s := canvas.NewText(suffix, a.pal.faint)
 	s.TextSize = 12
-	return container.NewBorder(nil, nil, nil, container.NewCenter(s), entry)
+	field := container.New(layout.NewGridWrapLayout(fyne.NewSize(numFieldW, entry.MinSize().Height)), entry)
+	return container.NewHBox(field, container.NewCenter(s))
 }
 
 // cardWithBody wraps a header and body in a rounded, bordered card with a hairline
