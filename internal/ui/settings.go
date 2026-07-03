@@ -2,6 +2,7 @@ package ui
 
 import (
 	"image/color"
+	"os"
 	"strconv"
 	"strings"
 
@@ -27,8 +28,9 @@ const (
 	cardHeadPadY   = 12
 	cardRowPadY    = 11
 	bodyPad        = 18
-	depthFieldW    = 56
-	numFieldW      = 80 // fixed width for the small min/sec number fields
+	depthFieldW    = 34  // depth is a single digit (scan depth never exceeds 9)
+	numFieldW      = 80  // fixed width for the small min/sec number fields
+	controlW       = 220 // fixed width for the Open-with select and Theme switch
 	labelColW      = 120
 )
 
@@ -73,7 +75,7 @@ func (a *App) showSettings() {
 				roots = append(roots[:i], roots[i+1:]...)
 				rebuildRoots()
 			}
-			rootsBox.Add(a.dirRow(i, roots, tips, onRemove))
+			rootsBox.Add(a.dirRow(i, roots, tips, w, onRemove))
 		}
 		rootsBox.Refresh()
 	}
@@ -123,9 +125,9 @@ func (a *App) showSettings() {
 	syncBody := a.inset(container.New(&tightVBox{gap: 13},
 		a.formRow("Fetch every", a.suffixField(fetchMin, "min")),
 		a.formRow("Local refresh", a.suffixField(localSec, "sec")),
-		a.formRow("Open with", actionSelect),
+		a.formRow("Open with", a.fixedWidth(actionSelect, controlW)),
 		customRow,
-		a.formRow("Theme", themeBar),
+		a.formRow("Theme", a.fixedWidth(themeBar, controlW)),
 	), cardRowPadY+2, cardPadX, cardRowPadY+2, cardPadX)
 	syncCard := a.cardWithBody(
 		a.inset(a.cardTitle("Sync & behavior"), cardHeadPadY, cardPadX, cardHeadPadY, cardPadX),
@@ -195,14 +197,24 @@ func (a *App) showSettings() {
 	activateApp()
 }
 
-// dirRow builds one scanned-directory row: a path entry (flex), a fixed-width depth
-// entry, an auto-fetch pill toggle and a remove button. The path/depth/fetch
-// closures mutate roots[i] in place (shared backing array); onRemove — bound to
-// this index by the caller — drops the entry and rebuilds the list.
-func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, onRemove func()) fyne.CanvasObject {
+// dirRow builds one scanned-directory row: a path entry (flex) with a folder-browse
+// button tucked inside it, a fixed-width depth entry, an auto-fetch pill toggle and
+// a remove button. The depth label and the toggle rely on hover tooltips rather than
+// inline text to keep the row uncluttered. The path/depth/fetch closures mutate
+// roots[i] in place (shared backing array); onRemove — bound to this index by the
+// caller — drops the entry and rebuilds the list.
+func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Window, onRemove func()) fyne.CanvasObject {
 	path := widget.NewEntry()
-	path.SetText(roots[i].Path)
+	// The folder-browse button sits inside the entry (its ActionItem, like a password
+	// revealer) so path + browse read as one field. It MUST be assigned before the
+	// SetText/SetPlaceHolder calls below, which build the entry's renderer.
+	path.ActionItem = newTipButton(tips, theme.FolderOpenIcon(), "Browse for a folder", func() {
+		a.browseForFolder(w, config.ExpandPath(path.Text), func(chosen string) {
+			fyne.Do(func() { path.SetText(tildeAbbrev(chosen)) }) // OnChanged updates roots[i]
+		})
+	})
 	path.SetPlaceHolder("~/projects")
+	path.SetText(roots[i].Path)
 	path.OnChanged = func(s string) { roots[i].Path = s }
 
 	depth := widget.NewEntry()
@@ -213,18 +225,63 @@ func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, onRemove fu
 		}
 	}
 	depthCell := container.New(layout.NewGridWrapLayout(fyne.NewSize(depthFieldW, depth.MinSize().Height)), depth)
+	depthField := newTipHover(tips, "Folder scan depth", depthCell) // replaces the inline "depth" label
 
 	fetch := newToggleSwitch(roots[i].AutoFetch, a.pal, func(b bool) { roots[i].AutoFetch = b })
+	fetch.tips, fetch.tip = tips, "Auto-fetch this directory"
 	remove := newTipButton(tips, theme.DeleteIcon(), "Remove this directory", onRemove)
 
+	// A little air between the depth field and the toggle; the delete button sits
+	// right next to the toggle (no wide gap).
 	right := container.NewHBox(
-		container.NewCenter(a.mutedLabel("depth")),
-		container.NewCenter(depthCell),
+		container.NewCenter(depthField),
+		hspace(12),
 		container.NewCenter(fetch),
 		remove,
 	)
 	row := container.NewBorder(nil, nil, nil, right, path)
 	return a.inset(row, cardRowPadY, cardPadX, cardRowPadY, cardPadX)
+}
+
+// hspace is a fixed-width, invisible spacer for widening gaps within an HBox.
+func hspace(w float32) fyne.CanvasObject {
+	r := canvas.NewRectangle(color.Transparent)
+	r.SetMinSize(fyne.NewSize(w, 0))
+	return r
+}
+
+// browseForFolder opens a folder picker starting at startDir and calls onPick with
+// the chosen absolute path. It uses the native OS panel where available (macOS) and
+// falls back to Fyne's in-app folder dialog elsewhere.
+func (a *App) browseForFolder(w fyne.Window, startDir string, onPick func(string)) {
+	if chosen, native := chooseFolderNative(startDir); native {
+		if chosen != "" {
+			onPick(chosen)
+		}
+		return
+	}
+	dialog.ShowFolderOpen(func(u fyne.ListableURI, err error) {
+		if err != nil || u == nil {
+			return
+		}
+		onPick(u.Path())
+	}, w)
+}
+
+// tildeAbbrev rewrites an absolute path under the user's home directory back to a
+// leading ~, matching how paths are typed and displayed; other paths pass through.
+func tildeAbbrev(abs string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return abs
+	}
+	if abs == home {
+		return "~"
+	}
+	if strings.HasPrefix(abs, home+string(os.PathSeparator)) {
+		return "~" + strings.TrimPrefix(abs, home)
+	}
+	return abs
 }
 
 // segmentedBar renders a segmented control (option 1e theme switch) reusing the
@@ -261,6 +318,13 @@ func (a *App) formRow(label string, control fyne.CanvasObject) *fyne.Container {
 	l := widget.NewLabelWithStyle(label, fyne.TextAlignTrailing, fyne.TextStyle{})
 	cell := container.New(layout.NewGridWrapLayout(fyne.NewSize(labelColW, l.MinSize().Height)), l)
 	return container.NewBorder(nil, nil, container.NewCenter(cell), nil, control)
+}
+
+// fixedWidth pins a control to width w and left-aligns it within its form row, so
+// widening the window stretches the empty background beside it rather than the
+// control (the extra cells of the grid-wrap stay empty).
+func (a *App) fixedWidth(o fyne.CanvasObject, w float32) fyne.CanvasObject {
+	return container.New(layout.NewGridWrapLayout(fyne.NewSize(w, o.MinSize().Height)), o)
 }
 
 // suffixField pairs a fixed-width number entry with a faint unit suffix (min / sec),

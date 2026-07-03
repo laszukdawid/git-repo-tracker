@@ -372,6 +372,7 @@ func (r *repoRow) deactivate() {
 	r.clearMarquees()
 	r.spinner.Stop()
 	r.spinner.Hide()
+	r.resetHover() // drop any lingering hover so a repurposed row shows no chips
 }
 
 func (r *repoRow) addCommit(hash string, t time.Time, msg string) {
@@ -437,6 +438,10 @@ func (r *repoRow) Tapped(*fyne.PointEvent) {
 
 func (r *repoRow) MouseIn(ev *desktop.MouseEvent) {
 	r.selfHovered = true
+	// The row body is hovered, so the pointer is not on a detail line; clearing this
+	// here self-heals a detailHovered flag stranded by a detail rebuild under a
+	// stationary cursor (a destroyed marquee never fires MouseOut).
+	r.detailHovered = false
 	r.recomputeHover()
 	r.MouseMoved(ev)
 }

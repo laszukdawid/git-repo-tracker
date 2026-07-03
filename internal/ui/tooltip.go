@@ -92,6 +92,36 @@ func (t *tooltipLayer) hide() {
 	}
 }
 
+// tipHover wraps a child object and shows a tooltip while the pointer is over it.
+// It's for widgets that don't surface hover themselves (e.g. a plain widget.Entry):
+// as the nearest Hoverable ancestor it receives the pointer events the child
+// ignores, without disturbing the child's own tap/focus/cursor handling.
+type tipHover struct {
+	widget.BaseWidget
+	child fyne.CanvasObject
+	tip   string
+	tips  *tooltipLayer
+}
+
+func newTipHover(tips *tooltipLayer, tip string, child fyne.CanvasObject) *tipHover {
+	h := &tipHover{child: child, tip: tip, tips: tips}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *tipHover) MouseIn(*desktop.MouseEvent) {
+	if h.tips != nil {
+		h.tips.show(h.tip, h)
+	}
+}
+func (h *tipHover) MouseMoved(*desktop.MouseEvent) {}
+func (h *tipHover) MouseOut() {
+	if h.tips != nil {
+		h.tips.hide()
+	}
+}
+func (h *tipHover) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(h.child) }
+
 // tipButton is a widget.Button that shows a tooltip while hovered.
 type tipButton struct {
 	widget.Button

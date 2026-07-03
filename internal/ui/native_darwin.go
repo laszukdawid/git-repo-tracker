@@ -8,6 +8,8 @@ package ui
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #import <dispatch/dispatch.h>
+#import <stdlib.h>
+#import <string.h>
 
 // findWindow returns the app's NSWindow whose title matches needle, or nil.
 static NSWindow *GRTFindWindow(NSString *needle) {
@@ -179,6 +181,42 @@ static void GRTActivateApp(void) {
 	});
 }
 
+// GRTChooseFolder shows the native macOS folder-open panel and returns the chosen
+// directory's POSIX path as a malloc'd C string (the caller frees), or NULL if the
+// user cancelled. NSOpenPanel must run on the main thread; the Fyne tap handler that
+// calls this already is, so we run it directly there and only dispatch across when
+// invoked from another thread (guarding against a dispatch_sync-to-self deadlock).
+static char *GRTChooseFolder(const char *initialDir) {
+	__block char *result = NULL;
+	NSString *start = (initialDir != NULL && initialDir[0] != '\0')
+		? [[NSString alloc] initWithUTF8String:initialDir] : nil;
+	void (^work)(void) = ^{
+		NSOpenPanel *panel = [NSOpenPanel openPanel];
+		panel.canChooseFiles = NO;
+		panel.canChooseDirectories = YES;
+		panel.allowsMultipleSelection = NO;
+		panel.canCreateDirectories = YES;
+		panel.prompt = @"Choose";
+		if (start != nil) {
+			panel.directoryURL = [NSURL fileURLWithPath:start isDirectory:YES];
+		}
+		[NSApp activateIgnoringOtherApps:YES];
+		if ([panel runModal] == NSModalResponseOK) {
+			NSURL *url = [[panel URLs] firstObject];
+			const char *p = url != nil ? [[url path] fileSystemRepresentation] : NULL;
+			if (p != NULL) {
+				result = strdup(p);
+			}
+		}
+	};
+	if ([NSThread isMainThread]) {
+		work();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), work);
+	}
+	return result;
+}
+
 // grtAppResignedActive is the Go callback (defined via //export in a companion
 // file) invoked when the app loses active status.
 extern void grtAppResignedActive(void);
@@ -237,6 +275,24 @@ func setMenuBarAgent() {
 // frontmost application.
 func activateApp() {
 	C.GRTActivateApp()
+}
+
+// chooseFolderNative shows the native macOS folder picker starting at initialDir
+// (an absolute path, or "" for the default location). The second return is true on
+// macOS to tell callers the OS panel handled the request; the path is "" when the
+// user cancelled.
+func chooseFolderNative(initialDir string) (string, bool) {
+	var c *C.char
+	if initialDir != "" {
+		c = C.CString(initialDir)
+		defer C.free(unsafe.Pointer(c))
+	}
+	res := C.GRTChooseFolder(c)
+	if res == nil {
+		return "", true
+	}
+	defer C.free(unsafe.Pointer(res))
+	return C.GoString(res), true
 }
 
 // popoverAutoHide is invoked (on the main thread) when the app resigns active,

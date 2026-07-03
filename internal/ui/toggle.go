@@ -26,6 +26,8 @@ type toggleSwitch struct {
 	hovered   bool
 	pal       palette
 	onChanged func(bool)
+	tips      *tooltipLayer // optional; set with tip to show a hover tooltip
+	tip       string
 }
 
 func newToggleSwitch(on bool, pal palette, onChanged func(bool)) *toggleSwitch {
@@ -42,9 +44,19 @@ func (t *toggleSwitch) Tapped(*fyne.PointEvent) {
 	}
 }
 
-func (t *toggleSwitch) MouseIn(*desktop.MouseEvent)    { t.setHovered(true) }
+func (t *toggleSwitch) MouseIn(*desktop.MouseEvent) {
+	t.setHovered(true)
+	if t.tips != nil && t.tip != "" {
+		t.tips.show(t.tip, t)
+	}
+}
 func (t *toggleSwitch) MouseMoved(*desktop.MouseEvent) {}
-func (t *toggleSwitch) MouseOut()                      { t.setHovered(false) }
+func (t *toggleSwitch) MouseOut() {
+	t.setHovered(false)
+	if t.tips != nil {
+		t.tips.hide()
+	}
+}
 
 func (t *toggleSwitch) setHovered(h bool) {
 	if t.hovered != h {
