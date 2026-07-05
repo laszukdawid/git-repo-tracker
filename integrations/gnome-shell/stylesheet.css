@@ -6,6 +6,13 @@
   font-weight: 600;
 }
 
+.grt-panel-glyph {
+  font-size: 1.05em;
+  font-weight: 700;
+  min-width: 14px;
+  text-align: center;
+}
+
 .grt-menu {
   min-width: 430px;
 }
@@ -28,7 +35,6 @@
   border-radius: 7px;
   padding: 7px 10px;
   background-color: rgba(128, 128, 128, 0.16);
-  color: #d8dee9;
   caret-color: #7aa2f7;
   selection-background-color: rgba(122, 162, 247, 0.35);
 }
@@ -70,7 +76,6 @@
 
 .grt-row-name {
   font-weight: 600;
-  color: #f5f7fb;
 }
 
 .grt-row-branch {

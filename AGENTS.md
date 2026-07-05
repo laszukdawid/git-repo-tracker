@@ -1,8 +1,9 @@
 # AGENTS.md
 
-Guidance for AI coding agents working in this repo. Humans: see
+Guidance for AI coding agents working in this repo. See also:
 [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md), and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Most important extension is
+[docs/DEVELOPER_FAQ.md](docs/DEVELOPER_FAQ.md) which should include and be updated whenever something frequently occuring is problematic.
 
 ## What this is
 

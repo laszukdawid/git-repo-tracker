@@ -1,0 +1,68 @@
+version: '3'
+
+vars:
+  GNOME_UUID: git-repo-tracker@laszukdawid.github.com
+  GNOME_DIR: integrations/gnome-shell
+
+tasks:
+
+  gnome:deps:
+    desc: 'Install GNOME Shell extension development tools on Debian/Ubuntu'
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y gnome-shell-extension-manager gnome-shell-extensions gjs
+
+  gnome:install:
+    desc: Clean-install the optional GNOME extension and CLI bridge for development
+    deps: [cli-build, app-build-local]
+    cmds:
+      - rm -rf "$HOME/.local/share/gnome-shell/extensions/{{.GNOME_UUID}}"
+      - gnome-extensions pack --force --out-dir /tmp {{.GNOME_DIR}}
+      - gnome-extensions install --force "/tmp/{{.GNOME_UUID}}.shell-extension.zip"
+      - |
+        if gnome-extensions list | grep -Fxq "{{.GNOME_UUID}}"; then
+          gnome-extensions info {{.GNOME_UUID}}
+        else
+          printf '%s\n' "Installed {{.GNOME_UUID}}, but the running GNOME Shell has not discovered it yet."
+          printf '%s\n' "Log out/in, then run: task gnome:enable"
+        fi
+
+  gnome:enable:
+    desc: Enable the development GNOME extension
+    cmds:
+      - |
+        if gnome-extensions list | grep -Fxq "{{.GNOME_UUID}}"; then
+          gnome-extensions enable {{.GNOME_UUID}}
+        else
+          printf '%s\n' "GNOME Shell has not discovered {{.GNOME_UUID}} yet."
+          printf '%s\n' "Log out/in, then run: task gnome:enable"
+          exit 2
+        fi
+
+  gnome:disable:
+    desc: Disable the development GNOME extension
+    cmds:
+      - gnome-extensions disable {{.GNOME_UUID}} || true
+
+  gnome:restart:
+    desc: Reinstall and re-enable the GNOME extension after code changes
+    cmds:
+      - task gnome:disable
+      - task gnome:install
+      - task gnome:enable
+
+  gnome:logs:
+    desc: Tail GNOME Shell logs filtered for git-repo-tracker
+    cmds:
+      - journalctl --user -f -o cat /usr/bin/gnome-shell | grep --line-buffered -i "git-repo-tracker\|gjs\|{{.GNOME_UUID}}"
+
+  gnome:check:
+    desc: Syntax-check the GNOME extension JavaScript
+    cmds:
+      - node --check {{.GNOME_DIR}}/extension.js
+
+  gnome:clean:
+    desc: Remove the installed development GNOME extension
+    cmds:
+      - gnome-extensions disable {{.GNOME_UUID}} || true
+      - rm -rf "$HOME/.local/share/gnome-shell/extensions/{{.GNOME_UUID}}"

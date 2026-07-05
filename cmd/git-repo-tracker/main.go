@@ -16,8 +16,11 @@ import (
 var version = "dev"
 
 func main() {
+	showSettings := false
 	for _, arg := range os.Args[1:] {
 		switch arg {
+		case "--settings":
+			showSettings = true
 		case "-v", "--version":
 			fmt.Printf("git-repo-tracker %s\n", version)
 			return
@@ -39,16 +42,17 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	app.Run()
+	app.RunWithOptions(ui.RunOptions{ShowSettings: showSettings})
 }
 
 func usage() {
 	fmt.Printf(`git-repo-tracker %s — system-tray tracker for local git repositories.
 
 Usage:
-  git-repo-tracker            Launch the tray app.
-  git-repo-tracker --version  Print the version and exit.
-  git-repo-tracker --help     Show this help and exit.
+  git-repo-tracker             Launch the tray app.
+  git-repo-tracker --settings  Launch the tray app and open Settings.
+  git-repo-tracker --version   Print the version and exit.
+  git-repo-tracker --help      Show this help and exit.
 
 Config:
   ~/Library/Application Support/git-repo-tracker/config.yaml   (macOS)

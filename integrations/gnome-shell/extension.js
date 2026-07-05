@@ -12,7 +12,18 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 const REFRESH_SECONDS = 30;
 const MAX_REPOS_PER_GROUP = 18;
 
-function cliCommand(refresh = false) {
+function appCommand(args = []) {
+    const configured = GLib.getenv('GIT_REPO_TRACKER_APP');
+    let exe = configured && configured.trim() !== '' ? configured : 'git-repo-tracker';
+    if (exe === 'git-repo-tracker') {
+        const local = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin', 'git-repo-tracker']);
+        if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
+            exe = local;
+    }
+    return [exe, ...args];
+}
+
+function cliExe() {
     const configured = GLib.getenv('GIT_REPO_TRACKER_CLI');
     let exe = configured && configured.trim() !== '' ? configured : 'git-repo-tracker-cli';
     if (exe === 'git-repo-tracker-cli') {
@@ -20,7 +31,11 @@ function cliCommand(refresh = false) {
         if (GLib.file_test(local, GLib.FileTest.IS_EXECUTABLE))
             exe = local;
     }
-    const argv = [exe, 'status', '--json'];
+    return exe;
+}
+
+function cliCommand(refresh = false) {
+    const argv = [cliExe(), 'status', '--json'];
     if (refresh)
         argv.push('--refresh');
     return argv;
@@ -62,11 +77,60 @@ function repoGlyphClass(repo) {
     return 'grt-glyph grt-glyph-clean';
 }
 
+function groupStatus(group) {
+    const parts = [];
+    if (group.errors > 0)
+        parts.push(`${group.errors} error${group.errors === 1 ? '' : 's'}`);
+    if (group.behind > 0)
+        parts.push(`${group.behind} behind`);
+    if (group.dirty > 0)
+        parts.push(`${group.dirty} dirty`);
+    return parts.length > 0 ? parts.join(' · ') : 'up to date';
+}
+
+function groupStatusClass(group) {
+    if (group.errors > 0)
+        return 'grt-error';
+    if (group.behind > 0 || group.dirty > 0)
+        return 'grt-section-status';
+    return 'grt-muted';
+}
+
 function roundButton(iconName, onClick) {
     const button = new St.Button({style_class: 'grt-footer-button', can_focus: true});
     button.child = new St.Icon({icon_name: iconName, style_class: 'grt-footer-icon'});
     button.connect('clicked', onClick);
     return button;
+}
+
+function spawnDetached(argv) {
+    try {
+        Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
+    } catch (e) {
+        logError(e, `git-repo-tracker: failed to launch ${argv.join(' ')}`);
+    }
+}
+
+function spawnLogged(argv) {
+    let proc;
+    try {
+        proc = Gio.Subprocess.new(
+            argv,
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+        );
+    } catch (e) {
+        logError(e, `git-repo-tracker: failed to launch ${argv.join(' ')}`);
+        return;
+    }
+    proc.communicate_utf8_async(null, null, (_proc, res) => {
+        try {
+            const [, stdout, stderr] = proc.communicate_utf8_finish(res);
+            if (!proc.get_successful())
+                log(`git-repo-tracker: ${argv.join(' ')} failed: ${stderr || stdout || 'no output'}`);
+        } catch (e) {
+            logError(e, `git-repo-tracker: failed waiting for ${argv.join(' ')}`);
+        }
+    });
 }
 
 const RepoRow = GObject.registerClass(
@@ -134,7 +198,11 @@ class Indicator extends PanelMenu.Button {
         this._query = '';
 
         const box = new St.BoxLayout({style_class: 'grt-panel-box'});
-        box.add_child(new St.Icon({icon_name: 'view-list-symbolic', style_class: 'system-status-icon'}));
+        box.add_child(new St.Label({
+            text: '⎇',
+            style_class: 'grt-panel-glyph',
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
         this._panelLabel = new St.Label({text: '...', y_align: Clutter.ActorAlign.CENTER, style_class: 'grt-panel-label'});
         box.add_child(this._panelLabel);
         this.add_child(box);
@@ -248,8 +316,8 @@ class Indicator extends PanelMenu.Button {
             const section = new PopupMenu.PopupSubMenuMenuItem(title, true);
             section.actor.add_style_class_name('grt-group-header');
             const status = new St.Label({
-                text: group.behind > 0 ? `${group.behind} behind` : 'up to date',
-                style_class: group.behind > 0 ? 'grt-section-status' : 'grt-muted',
+                text: groupStatus(group),
+                style_class: groupStatusClass(group),
                 x_align: Clutter.ActorAlign.END,
                 x_expand: true,
             });
@@ -278,11 +346,15 @@ class Indicator extends PanelMenu.Button {
             }
             const group = collapseHome(dirname(repo.path || ''));
             if (!groups.has(group))
-                groups.set(group, {name: group, repos: [], behind: 0});
+                groups.set(group, {name: group, repos: [], behind: 0, dirty: 0, errors: 0});
             const g = groups.get(group);
             g.repos.push(repo);
+            if (repo.err || repo.fetchErr)
+                g.errors++;
             if (repo.behind > 0)
                 g.behind++;
+            if (repo.dirty)
+                g.dirty++;
         }
         const out = Array.from(groups.values());
         for (const group of out) {
@@ -305,12 +377,12 @@ class Indicator extends PanelMenu.Button {
         const item = new PopupMenu.PopupBaseMenuItem({reactive: false, style_class: 'grt-footer'});
         const box = new St.BoxLayout({style_class: 'grt-footer-box', x_expand: true});
         box.add_child(roundButton('view-refresh-symbolic', () => this._refresh(true)));
-        box.add_child(roundButton('document-open-symbolic', () => {
-            const path = GLib.getenv('GIT_REPO_TRACKER_CONFIG') || GLib.build_filenamev([GLib.get_user_config_dir(), 'git-repo-tracker', 'config.yaml']);
-            Gio.Subprocess.new(['xdg-open', path], Gio.SubprocessFlags.NONE);
+        box.add_child(roundButton('folder-download-symbolic', () => {
+            spawnDetached([cliExe(), 'update-all']);
         }));
         box.add_child(roundButton('preferences-system-symbolic', () => {
-            Gio.Subprocess.new(['xdg-open', GLib.build_filenamev([GLib.get_user_config_dir(), 'git-repo-tracker'])], Gio.SubprocessFlags.NONE);
+            log('git-repo-tracker: opening settings');
+            spawnLogged(appCommand(['--settings']));
         }));
         item.add_child(box);
         this.menu.addMenuItem(item);

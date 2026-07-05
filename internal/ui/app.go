@@ -136,8 +136,9 @@ func NewApp(cfg *config.Config) (*App, error) {
 }
 
 // applyTheme resolves the configured appearance into a concrete light/dark
-// variant, records it (pal + variant) and installs it as the Fyne theme. Call it
-// before building UI and whenever the theme setting changes.
+// variant, records it (pal + variant) and installs that same concrete variant as
+// the Fyne theme so custom-painted surfaces and stock widgets stay in sync. Call
+// it before building UI and whenever the theme setting changes.
 func (a *App) applyTheme() {
 	v, forced := a.resolveVariant()
 	a.variant = v
@@ -146,7 +147,9 @@ func (a *App) applyTheme() {
 }
 
 // resolveVariant maps the configured theme mode to a concrete variant. "System"
-// follows the OS appearance Fyne reports; light/dark force a fixed variant.
+// snapshots the current OS appearance into a concrete light/dark variant; the app
+// re-runs this when the system flips so both the custom palette and stock widgets
+// change together.
 func (a *App) resolveVariant() (variant fyne.ThemeVariant, forced bool) {
 	switch a.cfg.ThemeMode() {
 	case config.ThemeLight:
@@ -154,12 +157,22 @@ func (a *App) resolveVariant() (variant fyne.ThemeVariant, forced bool) {
 	case config.ThemeDark:
 		return theme.VariantDark, true
 	default:
-		return a.fyneApp.Settings().ThemeVariant(), false
+		return a.fyneApp.Settings().ThemeVariant(), true
 	}
+}
+
+// RunOptions controls the initial UI shown after startup.
+type RunOptions struct {
+	ShowSettings bool
 }
 
 // Run builds the UI, starts the monitor and blocks until quit.
 func (a *App) Run() {
+	a.RunWithOptions(RunOptions{})
+}
+
+// RunWithOptions builds the UI, starts the monitor and blocks until quit.
+func (a *App) RunWithOptions(opts RunOptions) {
 	a.buildPopover()
 	a.rebuildTray()
 	a.updateTrayIcon()
@@ -177,10 +190,17 @@ func (a *App) Run() {
 	// Dismiss the popover when the user clicks outside the app, like a real
 	// menu-bar popover.
 	watchPopoverAutoHide(a.onPopoverResign)
-	// Drop the Dock icon once the app has started: it's a menu-bar utility, and
-	// GLFW forces a Dock tile during init that only a runtime activation-policy
-	// switch can undo (see setMenuBarAgent). No-op off macOS.
-	a.fyneApp.Lifecycle().SetOnStarted(setMenuBarAgent)
+	a.fyneApp.Lifecycle().SetOnStarted(func() {
+		// Drop the Dock icon once the app has started: it's a menu-bar utility, and
+		// GLFW forces a Dock tile during init that only a runtime activation-policy
+		// switch can undo (see setMenuBarAgent). No-op off macOS.
+		setMenuBarAgent()
+		if opts.ShowSettings {
+			fyne.Do(func() {
+				a.showSettings()
+			})
+		}
+	})
 	a.mgr.Start()
 	a.fyneApp.Run()
 }

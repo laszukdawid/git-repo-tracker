@@ -31,6 +31,10 @@ func main() {
 	switch os.Args[1] {
 	case "status":
 		status(os.Args[2:])
+	case "pull":
+		pull(os.Args[2:])
+	case "update-all":
+		updateAll(os.Args[2:])
 	case "-v", "--version", "version":
 		fmt.Printf("git-repo-tracker-cli %s\n", version)
 	case "-h", "--help", "help":
@@ -39,6 +43,39 @@ func main() {
 		fmt.Fprintf(os.Stderr, "git-repo-tracker-cli: unknown command %q\n", os.Args[1])
 		usage()
 		os.Exit(2)
+	}
+}
+
+func pull(args []string) {
+	fs := flag.NewFlagSet("pull", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: pull requires a repository path")
+		os.Exit(2)
+	}
+	if err := loadService().Pull(fs.Arg(0)); err != nil {
+		fatal("pull %s: %v", fs.Arg(0), err)
+	}
+}
+
+func updateAll(args []string) {
+	fs := flag.NewFlagSet("update-all", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	svc := loadService()
+	svc.RefreshNow(false)
+	var failed int
+	for _, r := range svc.Snapshot() {
+		if r.Behind <= 0 {
+			continue
+		}
+		if err := svc.Pull(r.Path); err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "pull %s: %v\n", r.Path, err)
+		}
+	}
+	if failed > 0 {
+		os.Exit(1)
 	}
 }
 
@@ -88,12 +125,16 @@ func usage() {
 
 Usage:
   git-repo-tracker-cli status [--json] [--refresh] [--fetch]
+  git-repo-tracker-cli pull <repo-path>
+  git-repo-tracker-cli update-all
   git-repo-tracker-cli --version
   git-repo-tracker-cli --help
 
 Commands:
   status     Print the current cached repo snapshot. Use --refresh to rescan and
              recompute local status. Add --fetch to refresh remotes too.
+  pull       Fast-forward one repository.
+  update-all Fast-forward every repository that is behind origin.
 `, version)
 }
 
