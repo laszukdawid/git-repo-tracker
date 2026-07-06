@@ -32,6 +32,9 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	if ui.TryHandleRemote(ui.RunOptions{ShowSettings: showSettings}) {
+		return
+	}
 
 	cfg, err := backend.LoadDefaultConfig()
 	if err != nil {

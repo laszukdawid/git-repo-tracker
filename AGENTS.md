@@ -23,9 +23,6 @@ go test ./...         # use `go test -race ./...` for monitor/concurrency change
 `task check` runs fmt+vet+test. The `-lobjc` linker warning on macOS is harmless
 (filter it: `go build ./... 2>&1 | grep -v "duplicate libraries"`).
 
-If you add first-party code, also run a `snyk_code_scan` and fix until clean
-(per the user's global policy).
-
 ## Layout
 
 ```

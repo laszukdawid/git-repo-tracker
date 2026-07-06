@@ -41,6 +41,14 @@ function cliCommand(refresh = false) {
     return argv;
 }
 
+function detailCommand(path) {
+    return [cliExe(), 'details', path];
+}
+
+function openCommand(path) {
+    return [cliExe(), 'open', path];
+}
+
 function collapseHome(path) {
     const home = GLib.get_home_dir();
     if (path === home)
@@ -133,14 +141,89 @@ function spawnLogged(argv) {
     });
 }
 
+function spawnLoggedWithDone(argv, onDone) {
+    let proc;
+    try {
+        proc = Gio.Subprocess.new(
+            argv,
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+        );
+    } catch (e) {
+        logError(e, `git-repo-tracker: failed to launch ${argv.join(' ')}`);
+        onDone(false, '', e.message);
+        return;
+    }
+    proc.communicate_utf8_async(null, null, (_proc, res) => {
+        try {
+            const [, stdout, stderr] = proc.communicate_utf8_finish(res);
+            const ok = proc.get_successful();
+            if (!ok)
+                log(`git-repo-tracker: ${argv.join(' ')} failed: ${stderr || stdout || 'no output'}`);
+            onDone(ok, stdout, stderr);
+        } catch (e) {
+            logError(e, `git-repo-tracker: failed waiting for ${argv.join(' ')}`);
+            onDone(false, '', e.message);
+        }
+    });
+}
+
+function openRichMode() {
+    log('git-repo-tracker: opening rich mode');
+    spawnLogged(appCommand([]));
+}
+
+function humanizeTime(value) {
+    if (!value)
+        return 'unknown';
+    const t = new Date(value);
+    if (Number.isNaN(t.getTime()) || t.getUTCFullYear() <= 1)
+        return 'unknown';
+    const d = Date.now() - t.getTime();
+    if (d < 60 * 1000)
+        return 'just now';
+    if (d < 60 * 60 * 1000)
+        return `${Math.floor(d / (60 * 1000))}m ago`;
+    if (d < 24 * 60 * 60 * 1000)
+        return `${Math.floor(d / (60 * 60 * 1000))}h ago`;
+    if (d < 7 * 24 * 60 * 60 * 1000)
+        return `${Math.floor(d / (24 * 60 * 60 * 1000))}d ago`;
+    return t.toISOString().slice(0, 10);
+}
+
+function commitMeta(hash, time) {
+    return `${hash} · ${humanizeTime(time)}`;
+}
+
+function repoErrorMessage(repo) {
+    if (repo.fetchErr)
+        return `Fetch error: ${repo.fetchErr}`;
+    if (repo.err)
+        return `Status error: ${repo.err}`;
+    return '';
+}
+
+function detailLine(text, styleClass) {
+    return new St.Label({
+        text,
+        style_class: styleClass,
+        x_expand: true,
+        x_align: Clutter.ActorAlign.START,
+    });
+}
+
 const RepoRow = GObject.registerClass(
 class RepoRow extends PopupMenu.PopupBaseMenuItem {
-    _init(repo) {
+    _init(repo, options) {
         super._init({reactive: true});
         this._repo = repo;
+        this._options = options;
+        this._suppressActivate = false;
         this.actor.add_style_class_name('grt-repo-row');
 
-        this.add_child(new St.Label({
+        const root = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'grt-row-root'});
+        const summary = new St.BoxLayout({vertical: false, x_expand: true, style_class: 'grt-row-summary'});
+
+        summary.add_child(new St.Label({
             text: repoGlyph(repo),
             style_class: repoGlyphClass(repo),
             y_align: Clutter.ActorAlign.CENTER,
@@ -153,7 +236,7 @@ class RepoRow extends PopupMenu.PopupBaseMenuItem {
         const branch = repo.branch && repo.branch.trim() !== '' ? repo.branch : '-';
         this._branch = new St.Label({text: `  ${branch}`, style_class: 'grt-row-branch'});
         labels.add_child(this._branch);
-        this.add_child(labels);
+        summary.add_child(labels);
 
         const value = [];
         if (repo.behind > 0)
@@ -173,18 +256,101 @@ class RepoRow extends PopupMenu.PopupBaseMenuItem {
             x_align: Clutter.ActorAlign.END,
             x_expand: true,
         });
-        this.add_child(this._value);
+        summary.add_child(this._value);
+
+        this._toggle = new St.Button({
+            style_class: 'grt-row-pull-button',
+            can_focus: true,
+            reactive: true,
+        });
+        this._toggle.child = new St.Icon({
+            icon_name: options.expanded ? 'pan-down-symbolic' : 'pan-end-symbolic',
+            style_class: 'grt-row-pull-icon',
+        });
+        this._toggle.connect('clicked', () => {
+            this._suppressActivate = true;
+            options.onToggle(repo.path);
+        });
+        summary.add_child(this._toggle);
+
+        if (repo.behind > 0 && !repo.err && !repo.fetchErr) {
+            this._pull = new St.Button({
+                style_class: 'grt-row-pull-button',
+                can_focus: true,
+                reactive: true,
+            });
+            this._pull.child = new St.Icon({
+                icon_name: 'folder-download-symbolic',
+                style_class: 'grt-row-pull-icon',
+            });
+            this._pull.connect('clicked', () => {
+                this._suppressActivate = true;
+                this._pull.reactive = false;
+                this._pull.can_focus = false;
+                options.onPull(repo.path);
+            });
+            summary.add_child(this._pull);
+        }
+
+        root.add_child(summary);
+
+        if (options.expanded) {
+            root.add_child(this._buildDetails(options.detailState));
+        }
+
+        this.add_child(root);
     }
 
     activate(event) {
-        if (this._repo.path) {
-            try {
-                Gio.Subprocess.new(['xdg-open', this._repo.path], Gio.SubprocessFlags.NONE);
-            } catch (e) {
-                logError(e, 'git-repo-tracker: failed to open repo');
-            }
+        if (this._suppressActivate) {
+            this._suppressActivate = false;
+            return;
         }
-        super.activate(event);
+        if (this._repo.path)
+            this._options.onOpen(this._repo.path);
+    }
+
+    _buildDetails(detailState) {
+        const box = new St.BoxLayout({vertical: true, x_expand: true, style_class: 'grt-row-detail-box'});
+        const err = repoErrorMessage(this._repo);
+        if (err)
+            box.add_child(detailLine(err, 'grt-row-detail-line grt-row-detail-error'));
+        if (!detailState || detailState.loading) {
+            if (!err)
+                box.add_child(detailLine('Loading…', 'grt-row-detail-line grt-row-detail-muted'));
+            return box;
+        }
+        if (detailState.error) {
+            box.add_child(detailLine(detailState.error, 'grt-row-detail-line grt-row-detail-error'));
+            return box;
+        }
+        const detail = detailState.detail;
+        if (!detail)
+            return box;
+        let head = detail.path || this._repo.path;
+        if (this._repo.behind > 0)
+            head += ` · behind ${this._repo.behind} commits`;
+        box.add_child(detailLine(head, 'grt-row-detail-line grt-row-detail-muted'));
+
+        const branch = this._repo.branch && this._repo.branch.trim() !== '' ? this._repo.branch : '-';
+        box.add_child(detailLine(`Local ${branch}`, 'grt-row-detail-line grt-row-detail-key'));
+        if (detail.localHash) {
+            box.add_child(detailLine(commitMeta(detail.localHash, detail.localTime), 'grt-row-detail-line grt-row-detail-meta'));
+            if (detail.localMsg)
+                box.add_child(detailLine(detail.localMsg, 'grt-row-detail-line grt-row-detail-muted'));
+        } else {
+            box.add_child(detailLine('—', 'grt-row-detail-line grt-row-detail-meta'));
+        }
+
+        box.add_child(detailLine(`Origin ${detail.originRef || '—'}`, 'grt-row-detail-line grt-row-detail-key'));
+        if (detail.originHash) {
+            box.add_child(detailLine(commitMeta(detail.originHash, detail.originTime), 'grt-row-detail-line grt-row-detail-meta'));
+            if (detail.originMsg)
+                box.add_child(detailLine(detail.originMsg, 'grt-row-detail-line grt-row-detail-muted'));
+        } else {
+            box.add_child(detailLine('—', 'grt-row-detail-line grt-row-detail-meta'));
+        }
+        return box;
     }
 });
 
@@ -196,6 +362,8 @@ class Indicator extends PanelMenu.Button {
         this._timeoutId = 0;
         this._lastDoc = null;
         this._query = '';
+        this._expandedPath = '';
+        this._details = new Map();
 
         const box = new St.BoxLayout({style_class: 'grt-panel-box'});
         box.add_child(new St.Label({
@@ -306,6 +474,7 @@ class Indicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         const groups = this._groupRepos(doc.repos || []);
+        const visiblePaths = new Set();
         if (groups.length === 0) {
             const empty = new PopupMenu.PopupMenuItem(this._query ? 'No matching repositories' : 'No repositories found');
             empty.setSensitive(false);
@@ -325,14 +494,27 @@ class Indicator extends PanelMenu.Button {
             this.menu.addMenuItem(section);
 
             const shown = group.repos.slice(0, MAX_REPOS_PER_GROUP);
-            for (const repo of shown)
-                section.menu.addMenuItem(new RepoRow(repo));
+            for (const repo of shown) {
+                visiblePaths.add(repo.path);
+                const expanded = repo.path === this._expandedPath;
+                if (expanded)
+                    this._ensureDetails(repo.path);
+                section.menu.addMenuItem(new RepoRow(repo, {
+                    expanded,
+                    detailState: this._details.get(repo.path) || null,
+                    onOpen: path => this._openRepo(path),
+                    onPull: path => this._pullRepo(path),
+                    onToggle: path => this._toggleExpand(path),
+                }));
+            }
             if (group.repos.length > shown.length) {
                 const rest = new PopupMenu.PopupMenuItem(`...and ${group.repos.length - shown.length} more`);
                 rest.setSensitive(false);
                 section.menu.addMenuItem(rest);
             }
         }
+        if (this._expandedPath && !visiblePaths.has(this._expandedPath))
+            this._expandedPath = '';
         this._addActions();
     }
 
@@ -372,11 +554,58 @@ class Indicator extends PanelMenu.Button {
         return out;
     }
 
+    _pullRepo(path) {
+        this._details.delete(path);
+        spawnLoggedWithDone([cliExe(), 'pull', path], () => {
+            this._refresh(true);
+        });
+    }
+
+    _openRepo(path) {
+        spawnLogged(openCommand(path));
+    }
+
+    _toggleExpand(path) {
+        if (this._expandedPath === path) {
+            this._expandedPath = '';
+            if (this._lastDoc)
+                this._render(this._lastDoc);
+            return;
+        }
+        this._expandedPath = path;
+        this._ensureDetails(path);
+        if (this._lastDoc)
+            this._render(this._lastDoc);
+    }
+
+    _ensureDetails(path) {
+        const current = this._details.get(path);
+        if (current && (current.loading || current.detail || current.error))
+            return;
+        this._details.set(path, {loading: true, detail: null, error: ''});
+        spawnLoggedWithDone(detailCommand(path), (ok, stdout, stderr) => {
+            let next = {loading: false, detail: null, error: stderr || 'Failed to load details'};
+            if (ok) {
+                try {
+                    next = {loading: false, detail: JSON.parse(stdout), error: ''};
+                } catch (e) {
+                    next = {loading: false, detail: null, error: e.message};
+                }
+            }
+            this._details.set(path, next);
+            if (this._expandedPath === path && this._lastDoc)
+                this._render(this._lastDoc);
+        });
+    }
+
     _addActions() {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const item = new PopupMenu.PopupBaseMenuItem({reactive: false, style_class: 'grt-footer'});
         const box = new St.BoxLayout({style_class: 'grt-footer-box', x_expand: true});
         box.add_child(roundButton('view-refresh-symbolic', () => this._refresh(true)));
+        box.add_child(roundButton('window-new-symbolic', () => {
+            openRichMode();
+        }));
         box.add_child(roundButton('folder-download-symbolic', () => {
             spawnDetached([cliExe(), 'update-all']);
         }));

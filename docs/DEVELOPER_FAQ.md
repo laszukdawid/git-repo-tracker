@@ -31,9 +31,9 @@ Nested GNOME is good for:
 Nested GNOME is not reliable for:
 
 - windows opened by external GUI processes
-- the Fyne Settings window launched from the extension
+- the Fyne Settings window surfaced by the extension
 
-Reason: the extension runs inside the nested Shell, but the Settings action launches a separate `git-repo-tracker --settings` process. In nested sessions that new GUI window may open on the outer session, fail to map visibly, or otherwise not appear where you expect.
+Reason: the extension asks the running tray app to show Settings. In nested sessions that GUI window still belongs to the real desktop session that owns the tray app, so it may appear on the outer session rather than inside the nested Shell.
 
 ### How should I test the GNOME Settings button, then?
 

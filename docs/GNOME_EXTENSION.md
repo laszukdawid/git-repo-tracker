@@ -14,6 +14,8 @@ This is intentionally separate from the Fyne app. AppIndicator/native tray menus
 
 The extension boundary is the CLI, not an internal Go package import. That keeps the JavaScript extension small and lets the Go backend remain the single source of truth for config, discovery, refresh behavior, and cache state.
 
+The footer actions include refresh, open Rich mode in the full Fyne app, update-all, and settings. On Linux the settings/open-app launch path is single-instance: if the tray app is already running, the extension reuses it instead of spawning another tray icon.
+
 ## Prerequisites
 
 On Ubuntu/Debian:

@@ -6,6 +6,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -108,6 +109,7 @@ type App struct {
 	trayIconDirty bool                        // a tray icon update was requested while the menu was open
 	trayBuilt     bool                        // Linux native menus are snapshot-based to avoid AppIndicator flicker
 	trayTimer     *time.Timer                 // best-effort tray-open timeout; systray has no close event
+	remoteCloser  io.Closer                   // Linux D-Bus single-instance listener; nil on other platforms
 
 	// Popover height animation state (main thread only). popoverH is the last
 	// applied height; resizeAnim animates a group collapse/expand smoothly; while
@@ -173,6 +175,9 @@ func (a *App) Run() {
 
 // RunWithOptions builds the UI, starts the monitor and blocks until quit.
 func (a *App) RunWithOptions(opts RunOptions) {
+	if !a.claimRemote(opts) {
+		return
+	}
 	a.buildPopover()
 	a.rebuildTray()
 	a.updateTrayIcon()
@@ -336,6 +341,10 @@ func (a *App) openConfigInEditor() {
 
 func (a *App) quit() {
 	a.mgr.Stop()
+	if a.remoteCloser != nil {
+		_ = a.remoteCloser.Close()
+		a.remoteCloser = nil
+	}
 	a.fyneApp.Quit()
 }
 

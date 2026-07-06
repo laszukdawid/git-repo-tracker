@@ -51,6 +51,10 @@ tasks:
       - task gnome:install
       - task gnome:enable
 
+  gnome:preview-wayland:
+    desc: Start wayland session to see updated gnome shell
+    cmd: MUTTER_DEBUG_DUMMY_MODE_SPECS=1560x1000 dbus-run-session -- gnome-shell --nested --wayland
+
   gnome:logs:
     desc: Tail GNOME Shell logs filtered for git-repo-tracker
     cmds:

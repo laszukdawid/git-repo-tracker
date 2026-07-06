@@ -55,6 +55,14 @@
   padding-bottom: 7px;
 }
 
+.grt-row-root {
+  spacing: 6px;
+}
+
+.grt-row-summary {
+  spacing: 0;
+}
+
 .grt-glyph {
   width: 20px;
   text-align: center;
@@ -86,6 +94,50 @@
 .grt-row-value {
   color: #c48a35;
   text-align: right;
+}
+
+.grt-row-pull-button {
+  min-width: 28px;
+  min-height: 28px;
+  margin-left: 8px;
+  border-radius: 999px;
+  background-color: rgba(122, 162, 247, 0.15);
+}
+
+.grt-row-pull-button:hover,
+.grt-row-pull-button:focus {
+  background-color: rgba(122, 162, 247, 0.27);
+}
+
+.grt-row-pull-icon {
+  icon-size: 14px;
+}
+
+.grt-row-detail-box {
+  margin-left: 20px;
+  spacing: 2px;
+}
+
+.grt-row-detail-line {
+  font-size: 0.92em;
+}
+
+.grt-row-detail-key {
+  color: #6f7f96;
+  font-weight: 600;
+}
+
+.grt-row-detail-meta {
+  color: #8b949e;
+  font-family: monospace;
+}
+
+.grt-row-detail-muted {
+  color: #8b949e;
+}
+
+.grt-row-detail-error {
+  color: #d74853;
 }
 
 .grt-error {

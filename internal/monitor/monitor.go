@@ -178,14 +178,14 @@ func (m *Manager) Pull(path string) error {
 // Details bundles a repo's path with the latest local and origin commit info,
 // for the expandable detail panel. It blocks on git, so call it from a goroutine.
 type Details struct {
-	Path       string
-	OriginRef  string
-	LocalHash  string
-	LocalTime  time.Time
-	LocalMsg   string
-	OriginHash string
-	OriginTime time.Time
-	OriginMsg  string
+	Path       string    `json:"path"`
+	OriginRef  string    `json:"originRef"`
+	LocalHash  string    `json:"localHash"`
+	LocalTime  time.Time `json:"localTime"`
+	LocalMsg   string    `json:"localMsg"`
+	OriginHash string    `json:"originHash"`
+	OriginTime time.Time `json:"originTime"`
+	OriginMsg  string    `json:"originMsg"`
 }
 
 // Details gathers the latest local (HEAD) and origin commit for a repo.

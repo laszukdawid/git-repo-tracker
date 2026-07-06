@@ -10,6 +10,7 @@ import (
 
 	"github.com/laszukdawid/git-repo-tracker/internal/backend"
 	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui/actions"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -31,6 +32,10 @@ func main() {
 	switch os.Args[1] {
 	case "status":
 		status(os.Args[2:])
+	case "details":
+		details(os.Args[2:])
+	case "open":
+		openRepo(os.Args[2:])
 	case "pull":
 		pull(os.Args[2:])
 	case "update-all":
@@ -55,6 +60,34 @@ func pull(args []string) {
 	}
 	if err := loadService().Pull(fs.Arg(0)); err != nil {
 		fatal("pull %s: %v", fs.Arg(0), err)
+	}
+}
+
+func details(args []string) {
+	fs := flag.NewFlagSet("details", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: details requires a repository path")
+		os.Exit(2)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(loadService().Details(fs.Arg(0))); err != nil {
+		fatal("encode details: %v", err)
+	}
+}
+
+func openRepo(args []string) {
+	fs := flag.NewFlagSet("open", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: open requires a repository path")
+		os.Exit(2)
+	}
+	svc := loadService()
+	action, custom := svc.Config().Click()
+	if err := actions.Run(action, custom, fs.Arg(0)); err != nil {
+		fatal("open %s: %v", fs.Arg(0), err)
 	}
 }
 
@@ -125,6 +158,8 @@ func usage() {
 
 Usage:
   git-repo-tracker-cli status [--json] [--refresh] [--fetch]
+  git-repo-tracker-cli details <repo-path>
+  git-repo-tracker-cli open <repo-path>
   git-repo-tracker-cli pull <repo-path>
   git-repo-tracker-cli update-all
   git-repo-tracker-cli --version
@@ -133,6 +168,8 @@ Usage:
 Commands:
   status     Print the current cached repo snapshot. Use --refresh to rescan and
              recompute local status. Add --fetch to refresh remotes too.
+  details    Print one repository's path and commit details as JSON.
+  open       Run the configured clickAction for one repository.
   pull       Fast-forward one repository.
   update-all Fast-forward every repository that is behind origin.
 `, version)
