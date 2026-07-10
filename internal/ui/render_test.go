@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -66,6 +67,28 @@ func TestPopoverRowRenders(t *testing.T) {
 	row.Configure(popoverItem{header: true, root: "~/projects", count: 32, behind: 10},
 		false, false, nil, nil, nil, nil)
 	assertRenders(t, row, 360)
+}
+
+func TestRepoRowReusesUnchangedDetailWidgets(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{variant: theme.VariantDark, forced: true})
+	row := newRepoRow(nil, paletteFor(theme.VariantDark))
+	repo := monitor.RepoState{Path: "/work/api", Name: "api", Branch: "main", Behind: 1}
+	detail := &monitor.Details{Path: repo.Path, OriginRef: "origin/main", LocalHash: "a1", LocalMsg: "first"}
+
+	row.Configure(repo, true, false, detail, nil, nil, nil)
+	first := row.detailBox.Objects[0]
+	repo.LastLocal = time.Now()
+	row.Configure(repo, true, false, detail, nil, nil, nil)
+	if row.detailBox.Objects[0] != first {
+		t.Fatal("unchanged detail was rebuilt")
+	}
+
+	changed := *detail
+	changed.LocalMsg = "second"
+	row.Configure(repo, true, false, &changed, nil, nil, nil)
+	if row.detailBox.Objects[0] == first {
+		t.Fatal("changed detail was not rebuilt")
+	}
 }
 
 func TestMarqueeOverflowAndText(t *testing.T) {

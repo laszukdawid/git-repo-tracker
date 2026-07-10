@@ -125,18 +125,22 @@ type repoRow struct {
 	pulling  bool
 	dim      bool // synced (up-to-date) rows read calmer
 
-	glyphSlot *fyne.Container // holds the current status glyph (rebuilt per repo)
-	fullName  string          // untruncated repo name (name.Text is truncated to fit in Layout)
-	name      *canvas.Text
-	branch    *canvas.Text
-	count     *canvas.Text // "↓N" behind count
-	pullBtn   *iconButton
-	openBtn   *iconButton
-	spinner   *widget.Activity
-	rightBox  *fyne.Container
-	detailBox *fyne.Container
-	marquees  []*marqueeText // scrollable detail lines (path + commit messages)
-	tips      *tooltipLayer
+	glyphSlot  *fyne.Container // holds the current status glyph (rebuilt per repo)
+	fullName   string          // untruncated repo name (name.Text is truncated to fit in Layout)
+	name       *canvas.Text
+	branch     *canvas.Text
+	count      *canvas.Text // "↓N" behind count
+	pullBtn    *iconButton
+	openBtn    *iconButton
+	spinner    *widget.Activity
+	rightBox   *fyne.Container
+	detailBox  *fyne.Container
+	marquees   []*marqueeText // scrollable detail lines (path + commit messages)
+	tips       *tooltipLayer
+	detailRepo detailRenderState
+	detailData monitor.Details
+	detailSet  bool
+	detailMade bool
 
 	// Two sources because the detail lines are themselves Hoverable: selfHovered is
 	// the pointer on the row body, detailHovered on a detail line. Either keeps the
@@ -148,6 +152,21 @@ type repoRow struct {
 	onExpand func(monitor.RepoState)
 	onPull   func(monitor.RepoState)
 	onOpen   func(monitor.RepoState)
+}
+
+type detailRenderState struct {
+	path     string
+	branch   string
+	behind   int
+	err      string
+	fetchErr string
+}
+
+func detailState(repo monitor.RepoState) detailRenderState {
+	return detailRenderState{
+		path: repo.Path, branch: repo.Branch, behind: repo.Behind,
+		err: repo.Err, fetchErr: repo.FetchErr,
+	}
 }
 
 func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
@@ -223,11 +242,27 @@ func (r *repoRow) Configure(repo monitor.RepoState, expanded, pulling bool, deta
 	}
 
 	if expanded {
-		r.rebuildDetail(detail)
+		state := detailState(repo)
+		detailChanged := r.detailMade && (r.detailRepo != state || r.detailSet != (detail != nil))
+		if !detailChanged && r.detailMade && detail != nil {
+			detailChanged = r.detailData != *detail
+		}
+		if !r.detailMade || detailChanged {
+			r.rebuildDetail(detail)
+			r.detailRepo = state
+			r.detailSet = detail != nil
+			if detail != nil {
+				r.detailData = *detail
+			} else {
+				r.detailData = monitor.Details{}
+			}
+			r.detailMade = true
+		}
 		r.detailBox.Show()
 	} else {
 		r.clearMarquees()
 		r.detailBox.Hide()
+		r.detailMade = false
 	}
 
 	r.updateActions()

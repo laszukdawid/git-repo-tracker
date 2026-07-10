@@ -285,9 +285,45 @@ func (a *App) onChange() {
 // menu-bar icon state.
 func (a *App) refresh() {
 	a.all = a.mgr.Snapshot()
+	a.pruneViewState()
 	a.applyFilter()
 	a.rebuildTray()
 	a.updateTrayIcon()
+}
+
+// pruneViewState drops cached UI state whose repository or group no longer
+// exists in the latest snapshot.
+func (a *App) pruneViewState() {
+	livePaths := make(map[string]bool, len(a.all))
+	for _, r := range a.all {
+		livePaths[r.Path] = true
+	}
+	for path := range a.details {
+		if !livePaths[path] {
+			delete(a.details, path)
+		}
+	}
+	for path := range a.pulling {
+		if !livePaths[path] {
+			delete(a.pulling, path)
+		}
+	}
+	if a.expandedPath != "" && !livePaths[a.expandedPath] {
+		a.expandedPath = ""
+	}
+
+	liveGroups := make(map[string]bool)
+	items, _ := a.groupItems(a.all)
+	for _, item := range items {
+		if item.header {
+			liveGroups[item.root] = true
+		}
+	}
+	for root := range a.collapsedGrp {
+		if !liveGroups[root] {
+			delete(a.collapsedGrp, root)
+		}
+	}
 }
 
 // activate runs the configured click action for a repo.

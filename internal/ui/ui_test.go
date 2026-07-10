@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
 
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
 	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
 	"github.com/laszukdawid/git-repo-tracker/internal/ui/trayicon"
 )
@@ -129,6 +130,34 @@ func TestFmtBadge(t *testing.T) {
 func TestUseSplashPopoverOnlyOnDarwin(t *testing.T) {
 	if got, want := useSplashPopover(), runtime.GOOS == "darwin"; got != want {
 		t.Errorf("useSplashPopover() = %v, want %v", got, want)
+	}
+}
+
+func TestPruneViewState(t *testing.T) {
+	a := &App{
+		cfg:          &config.Config{},
+		all:          []monitor.RepoState{{Path: "/work/live", Name: "live"}},
+		details:      map[string]*monitor.Details{"/work/live": {}, "/work/gone": {}},
+		pulling:      map[string]bool{"/work/live": true, "/work/gone": true},
+		expandedPath: "/work/gone",
+		collapsedGrp: map[string]bool{"/work": true, "/gone": true},
+	}
+
+	a.pruneViewState()
+	if _, ok := a.details["/work/gone"]; ok {
+		t.Fatal("stale detail cache entry was retained")
+	}
+	if _, ok := a.pulling["/work/gone"]; ok {
+		t.Fatal("stale pulling entry was retained")
+	}
+	if a.expandedPath != "" {
+		t.Errorf("expandedPath = %q, want empty", a.expandedPath)
+	}
+	if !a.collapsedGrp["/work"] || a.collapsedGrp["/gone"] {
+		t.Errorf("collapsed groups were not reconciled: %v", a.collapsedGrp)
+	}
+	if a.details["/work/live"] == nil || !a.pulling["/work/live"] {
+		t.Fatal("live repository state was pruned")
 	}
 }
 
