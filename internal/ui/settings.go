@@ -83,7 +83,7 @@ func (a *App) showSettings() {
 
 	addAction := newTextAction("Add directory", theme.ContentAddIcon(), theme.ColorNamePrimary,
 		a.pal.rowName, func() {
-			roots = append(roots, config.Root{Path: "~/", Depth: 5, AutoFetch: true})
+			roots = append(roots, newScanRoot())
 			rebuildRoots()
 		})
 	dirHeader := container.NewBorder(nil, nil,
@@ -195,6 +195,10 @@ func (a *App) showSettings() {
 	// As a menu-bar agent the app isn't auto-activated when Settings is opened from
 	// the status-bar menu, so surface the window explicitly (no-op off macOS).
 	activateApp()
+}
+
+func newScanRoot() config.Root {
+	return config.Root{Depth: 5, AutoFetch: true}
 }
 
 // dirRow builds one scanned-directory row: a path entry (flex) with a folder-browse

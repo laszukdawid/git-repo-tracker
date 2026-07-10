@@ -13,6 +13,18 @@ Resolved in this order:
 
 On first launch, if no file exists, a starter config is written — seeded with a `~/projects` root if that directory exists.
 
+## macOS folder access
+
+macOS protects `Documents` and other user folders. Add a scan root with the folder button in Settings rather than typing `~/` and saving it: the native folder picker grants access to the chosen folder and avoids scanning every protected folder beneath the home directory.
+
+If a previous version repeatedly prompts for Documents access, remove a broad `~/` root unless it is intentional, then reset the old permission record and relaunch:
+
+```sh
+tccutil reset SystemPolicyDocumentsFolder com.github.laszukdawid.git-repo-tracker
+```
+
+The next access request explains that the app scans only directories explicitly configured as repository roots.
+
 ## Options
 
 ```yaml

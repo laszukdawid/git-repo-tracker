@@ -133,6 +133,16 @@ func TestUseSplashPopoverOnlyOnDarwin(t *testing.T) {
 	}
 }
 
+func TestNewScanRootRequiresDirectorySelection(t *testing.T) {
+	root := newScanRoot()
+	if root.Path != "" {
+		t.Errorf("new root path = %q, want empty", root.Path)
+	}
+	if root.Depth != 5 || !root.AutoFetch {
+		t.Errorf("new root = %+v, want depth 5 with auto-fetch enabled", root)
+	}
+}
+
 func TestPruneViewState(t *testing.T) {
 	a := &App{
 		cfg:          &config.Config{},

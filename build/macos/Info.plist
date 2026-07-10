@@ -34,5 +34,7 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Git Repo Tracker scans only the folders you add to find local Git repositories.</string>
 </dict>
 </plist>

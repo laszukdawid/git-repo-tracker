@@ -94,6 +94,24 @@ Only move to a custom file-backed icon if there is a strong reason and it is vis
 
 Practical rule: if a custom panel icon is invisible, switch to a text/glyph-based mark before debugging more complex asset-loading paths.
 
+## macOS privacy
+
+### Why does macOS keep asking for Documents access?
+
+The scanner walks every configured root periodically. A `~/` root therefore reaches
+`~/Documents` even when the user only intended to track a narrower project folder.
+
+Use the native folder picker in Settings to add the specific project directory.
+For a machine that has retained a bad permission decision, remove the broad root
+and reset its TCC record before relaunching:
+
+```sh
+tccutil reset SystemPolicyDocumentsFolder com.github.laszukdawid.git-repo-tracker
+```
+
+The macOS app bundle must retain `NSDocumentsFolderUsageDescription` in
+`build/macos/Info.plist`; it explains the request in the system prompt.
+
 ## Fyne UI
 
 ### Why do custom-painted surfaces and stock Fyne widgets sometimes look like mixed themes?
