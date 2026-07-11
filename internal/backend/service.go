@@ -60,5 +60,9 @@ func (s *Service) Counts() (total, behind int) { return s.mgr.Counts() }
 // Pull fast-forwards one repository.
 func (s *Service) Pull(path string) error { return s.mgr.Pull(path) }
 
+// UpdateAll fetches every tracked remote, then fast-forwards every repository
+// that is behind it. Manual updates ignore the background auto-fetch setting.
+func (s *Service) UpdateAll() []monitor.UpdateResult { return s.mgr.UpdateAll() }
+
 // Details returns expandable detail data for one repository.
 func (s *Service) Details(path string) monitor.Details { return s.mgr.Details(path) }

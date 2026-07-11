@@ -23,6 +23,11 @@ type statusDoc struct {
 	Repos       []monitor.RepoState `json:"repos"`
 }
 
+type updateAllDoc struct {
+	Updated int                    `json:"updated"`
+	Failed  []monitor.UpdateResult `json:"failed,omitempty"`
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -58,7 +63,10 @@ func pull(args []string) {
 		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: pull requires a repository path")
 		os.Exit(2)
 	}
-	if err := loadService().Pull(fs.Arg(0)); err != nil {
+	svc := loadService()
+	err := svc.Pull(fs.Arg(0))
+	svc.Stop()
+	if err != nil {
 		fatal("pull %s: %v", fs.Arg(0), err)
 	}
 }
@@ -93,21 +101,31 @@ func openRepo(args []string) {
 
 func updateAll(args []string) {
 	fs := flag.NewFlagSet("update-all", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "print JSON result")
 	_ = fs.Parse(args)
 
 	svc := loadService()
-	svc.RefreshNow(false)
-	var failed int
-	for _, r := range svc.Snapshot() {
-		if r.Behind <= 0 {
+	results := svc.UpdateAll()
+	doc := updateAllDoc{}
+	for _, result := range results {
+		if result.Err != "" {
+			doc.Failed = append(doc.Failed, result)
 			continue
 		}
-		if err := svc.Pull(r.Path); err != nil {
-			failed++
-			fmt.Fprintf(os.Stderr, "pull %s: %v\n", r.Path, err)
-		}
+		doc.Updated++
 	}
-	if failed > 0 {
+
+	if *jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(doc); err != nil {
+			fatal("encode update result: %v", err)
+		}
+	} else {
+		fmt.Printf("updated %d repos\n", doc.Updated)
+	}
+	for _, result := range doc.Failed {
+		fmt.Fprintf(os.Stderr, "pull %s: %s\n", result.Path, result.Err)
+	}
+	if len(doc.Failed) > 0 {
 		os.Exit(1)
 	}
 }
@@ -161,7 +179,7 @@ Usage:
   git-repo-tracker-cli details <repo-path>
   git-repo-tracker-cli open <repo-path>
   git-repo-tracker-cli pull <repo-path>
-  git-repo-tracker-cli update-all
+  git-repo-tracker-cli update-all [--json]
   git-repo-tracker-cli --version
   git-repo-tracker-cli --help
 
@@ -171,7 +189,7 @@ Commands:
   details    Print one repository's path and commit details as JSON.
   open       Run the configured clickAction for one repository.
   pull       Fast-forward one repository.
-  update-all Fast-forward every repository that is behind origin.
+  update-all Fetch every remote, then fast-forward every repository that is behind origin.
 `, version)
 }
 
