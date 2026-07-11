@@ -55,6 +55,12 @@ type RepoState struct {
 // Updatable reports whether the repo is behind its remote and worth pulling.
 func (r RepoState) Updatable() bool { return r.Behind > 0 }
 
+// UpdateResult records the outcome of one pull attempted by UpdateAll.
+type UpdateResult struct {
+	Path string `json:"path"`
+	Err  string `json:"error,omitempty"`
+}
+
 // Manager owns the repo registry and the refresh schedulers. Safe for
 // concurrent use.
 type Manager struct {
@@ -159,6 +165,54 @@ func (m *Manager) Refresh() {
 func (m *Manager) RefreshNow(withFetch bool) {
 	m.discover()
 	m.refreshAll(withFetch)
+}
+
+// UpdateAll fetches every discovered repository, then fast-forwards those that
+// are behind. A manual update deliberately ignores autoFetch: that setting only
+// controls the background remote-refresh loop.
+func (m *Manager) UpdateAll() []UpdateResult {
+	m.discover()
+	m.refreshAllWithFetch(true, true)
+
+	var targets []RepoState
+	for _, r := range m.Snapshot() {
+		if r.Updatable() {
+			targets = append(targets, r)
+		}
+	}
+	results := make([]UpdateResult, len(targets))
+	if len(targets) == 0 {
+		return results
+	}
+
+	type job struct {
+		index int
+		path  string
+	}
+	jobs := make(chan job)
+	workers := min(refreshWorkers, len(targets))
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				result := UpdateResult{Path: j.path}
+				if err := m.Pull(j.path); err != nil {
+					result.Err = err.Error()
+				}
+				results[j.index] = result
+			}
+		}()
+	}
+	for i, r := range targets {
+		jobs <- job{index: i, path: r.Path}
+	}
+	close(jobs)
+	wg.Wait()
+
+	m.persist()
+	return results
 }
 
 // Pull fast-forwards a repo to its upstream and refreshes its status. It blocks
@@ -286,6 +340,12 @@ func (m *Manager) discover() {
 // refreshAll updates every tracked repo through a bounded worker pool. When
 // withFetch is set, fetch-eligible repos are fetched first.
 func (m *Manager) refreshAll(withFetch bool) {
+	m.refreshAllWithFetch(withFetch, false)
+}
+
+// refreshAllWithFetch updates every tracked repo. forceFetch makes a
+// user-requested update fetch every repository instead of only auto-fetch roots.
+func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 	m.mu.RLock()
 	paths := make([]string, 0, len(m.repos))
 	for p := range m.repos {
@@ -307,7 +367,7 @@ func (m *Manager) refreshAll(withFetch bool) {
 				if m.ctx.Err() != nil {
 					continue // drain remaining jobs without work
 				}
-				if withFetch && fetchSet[p] {
+				if withFetch && (forceFetch || fetchSet[p]) {
 					if err := git.Fetch(m.ctx, p); err != nil {
 						m.update(p, func(r *RepoState) { r.FetchErr = err.Error() })
 					} else {

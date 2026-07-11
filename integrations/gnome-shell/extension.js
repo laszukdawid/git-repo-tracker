@@ -45,6 +45,10 @@ function detailCommand(path) {
     return [cliExe(), 'details', path];
 }
 
+function updateAllCommand() {
+    return [cliExe(), 'update-all', '--json'];
+}
+
 function openCommand(path) {
     return [cliExe(), 'open', path];
 }
@@ -109,14 +113,6 @@ function roundButton(iconName, onClick) {
     button.child = new St.Icon({icon_name: iconName, style_class: 'grt-footer-icon'});
     button.connect('clicked', onClick);
     return button;
-}
-
-function spawnDetached(argv) {
-    try {
-        Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
-    } catch (e) {
-        logError(e, `git-repo-tracker: failed to launch ${argv.join(' ')}`);
-    }
 }
 
 function spawnLogged(argv) {
@@ -200,6 +196,23 @@ function repoErrorMessage(repo) {
     if (repo.err)
         return `Status error: ${repo.err}`;
     return '';
+}
+
+function updateAllMessage(ok, stdout, stderr) {
+    let result;
+    try {
+        result = JSON.parse(stdout);
+    } catch (e) {
+        return `Update all failed: ${stderr || e.message}`;
+    }
+    const updated = Number.isInteger(result.updated) ? result.updated : 0;
+    const failed = Array.isArray(result.failed) ? result.failed : [];
+    let message = `Updated ${updated} ${updated === 1 ? 'repository' : 'repositories'}`;
+    if (failed.length > 0)
+        message += `; ${failed.length} failed`;
+    if (!ok && failed.length === 0)
+        message = `Update all failed: ${stderr || message}`;
+    return message;
 }
 
 function detailLine(text, styleClass) {
@@ -364,6 +377,7 @@ class Indicator extends PanelMenu.Button {
         this._query = '';
         this._expandedPath = '';
         this._details = new Map();
+        this._updatingAll = false;
 
         const box = new St.BoxLayout({style_class: 'grt-panel-box'});
         box.add_child(new St.Label({
@@ -561,6 +575,19 @@ class Indicator extends PanelMenu.Button {
         });
     }
 
+    _updateAll() {
+        if (this._updatingAll)
+            return;
+        this._updatingAll = true;
+        if (this._lastDoc)
+            this._render(this._lastDoc);
+        spawnLoggedWithDone(updateAllCommand(), (ok, stdout, stderr) => {
+            this._updatingAll = false;
+            Main.notify('Git Repo Tracker', updateAllMessage(ok, stdout, stderr));
+            this._refresh(true);
+        });
+    }
+
     _openRepo(path) {
         spawnLogged(openCommand(path));
     }
@@ -606,9 +633,10 @@ class Indicator extends PanelMenu.Button {
         box.add_child(roundButton('window-new-symbolic', () => {
             openRichMode();
         }));
-        box.add_child(roundButton('folder-download-symbolic', () => {
-            spawnDetached([cliExe(), 'update-all']);
-        }));
+        const updateAll = roundButton('folder-download-symbolic', () => this._updateAll());
+        updateAll.reactive = !this._updatingAll;
+        updateAll.can_focus = !this._updatingAll;
+        box.add_child(updateAll);
         box.add_child(roundButton('preferences-system-symbolic', () => {
             log('git-repo-tracker: opening settings');
             spawnLogged(appCommand(['--settings']));
