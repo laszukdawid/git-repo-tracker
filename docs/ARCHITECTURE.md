@@ -45,7 +45,7 @@ We shell out to the user's `git` binary rather than use a pure-Go library, so we
 
 - **`GetStatus`** runs one `git status --porcelain=v2 --branch` — branch, upstream, ahead/behind (`branch.ab`), and per-file staged/modified/deleted/untracked counts, all from a single ~0 ms call.
 - **`DiffStat`** uses a *three-dot* diff (`HEAD...<ref>`) — the merge-base→upstream change, i.e. exactly the lines you'd pull in.
-- **`Fetch`** updates remote-tracking refs only (never the working tree). **`Pull`** is `--ff-only` — it never merges or leaves a conflicted state.
+- **`Fetch`** updates remote-tracking refs only (never the working tree). **`Pull`** is `--ff-only` — it never merges or leaves a conflicted state. Repositories opted into **Keep fresh** are fetched during remote passes regardless of their root's `autoFetch` setting, then pulled when their refreshed status is behind.
 - **`exec.go`** resolves `git` once and augments `PATH` (`/opt/homebrew/bin`, …) plus sets `GIT_TERMINAL_PROMPT=0`, so background fetches fail fast instead of hanging on a credential prompt, even when launched from Finder/launchd.
 
 ## Discovery (`internal/scan`)

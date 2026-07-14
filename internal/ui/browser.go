@@ -208,13 +208,21 @@ func (a *App) listUpdate(id widget.ListItemID, o fyne.CanvasObject) {
 	it := a.visible[id]
 	row := o.(*popoverRow)
 	if it.header {
-		row.Configure(it, false, false, nil, nil, nil, nil)
+		row.Configure(it, false, false, nil, nil, nil, nil, nil)
 	} else {
 		p := it.repo.Path
 		row.Configure(it, a.expandedPath == p, a.pulling[p], a.details[p],
-			a.toggleExpand, a.pullRepo, a.activate)
+			a.toggleExpand, a.pullRepo, a.toggleKeepFresh, a.activate)
 	}
 	a.list.SetItemHeight(id, row.MinSize().Height)
+}
+
+func (a *App) toggleKeepFresh(r monitor.RepoState) {
+	if err := a.mgr.SetKeepFresh(r.Path, !r.KeepFresh); err != nil {
+		dialog.ShowError(err, a.win)
+		return
+	}
+	a.refresh()
 }
 
 // toggleGroup folds or unfolds a scan-root section. The list content updates
@@ -582,7 +590,7 @@ func (a *App) probeRow() *popoverRow { return newPopoverRow(a.tips, a.pal, nil) 
 func (a *App) collapsedRowHeight() float32 {
 	if a.collapsedRow == 0 {
 		probe := a.probeRow()
-		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag"}}, false, false, nil, nil, nil, nil)
+		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag"}}, false, false, nil, nil, nil, nil, nil)
 		a.collapsedRow = probe.MinSize().Height
 		probe.repo.clearMarquees()
 	}
@@ -594,7 +602,7 @@ func (a *App) collapsedRowHeight() float32 {
 func (a *App) groupHeaderHeight() float32 {
 	if a.groupRowH == 0 {
 		probe := a.probeRow()
-		probe.Configure(popoverItem{header: true, root: "~/x", count: 1}, false, false, nil, nil, nil, nil)
+		probe.Configure(popoverItem{header: true, root: "~/x", count: 1}, false, false, nil, nil, nil, nil, nil)
 		a.groupRowH = probe.MinSize().Height
 	}
 	return a.groupRowH
@@ -606,7 +614,7 @@ func (a *App) groupHeaderHeight() float32 {
 // cleared immediately.
 func (a *App) expandedRowHeight(r monitor.RepoState) float32 {
 	probe := a.probeRow()
-	probe.Configure(popoverItem{repo: r}, true, false, a.details[r.Path], nil, nil, nil)
+	probe.Configure(popoverItem{repo: r}, true, false, a.details[r.Path], nil, nil, nil, nil)
 	h := probe.MinSize().Height
 	probe.repo.clearMarquees()
 	return h

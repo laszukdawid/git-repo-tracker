@@ -23,8 +23,10 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
   search field and a virtualized list (sort by name / most-behind; filter all /
   updatable / dirty).
 - **Inline detail** — click a repo to expand its path and the latest local/origin
-  commit times; hover to reveal **pull** (fast-forward) and **open** icons.
+  commit times; hover to reveal **pull** or **keep fresh**, plus **open**.
 - **Update all** — one button fast-forwards every repo that's behind.
+- **Keep fresh** — opt a synced repo into safe automatic fast-forward pulls when
+  a later refresh finds remote commits.
 - **In-app settings** — manage roots, intervals, the open action, and
   launch-at-login without hand-editing YAML.
 
@@ -86,7 +88,7 @@ The app lives in the menu bar / system tray — it has no main window.
 | **Right-click** the tray icon | Native menu. Linux shows outdated repos plus **Open App**. |
 | Type in the search box | Live-filter by name or branch |
 | **Click a repo row** | Expand inline detail (path + latest commit times) |
-| **Hover a row** | Reveal **⬇ pull** (fast-forward) and **📂 open** icons |
+| **Hover a row** | Reveal **⬇ pull** when behind or **↻ keep fresh** when synced, plus **📂 open** |
 | **⬇ in the header** | Update all — pull every repo that's behind |
 | **☰ in the header** | Sort / filter / Settings |
 | `Esc` | Dismiss the popover |

@@ -56,6 +56,7 @@ type Root struct {
 type Config struct {
 	Roots                []Root   `yaml:"roots"`
 	Ignore               []string `yaml:"ignore"`
+	KeepFresh            []string `yaml:"keepFresh,omitempty"`
 	FetchIntervalMinutes int      `yaml:"fetchIntervalMinutes"`
 	LocalRefreshSeconds  int      `yaml:"localRefreshSeconds"`
 	ClickAction          string   `yaml:"clickAction"`
@@ -162,6 +163,19 @@ func (c *Config) IgnoreDirs() []string {
 	return out
 }
 
+// KeepFreshRepos returns the normalized paths opted into automatic pulls.
+func (c *Config) KeepFreshRepos() map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]bool, len(c.KeepFresh))
+	for _, p := range c.KeepFresh {
+		if p = ExpandPath(p); p != "" {
+			out[p] = true
+		}
+	}
+	return out
+}
+
 // FetchInterval is how often to run `git fetch` for each repo.
 func (c *Config) FetchInterval() time.Duration {
 	c.mu.Lock()
@@ -229,6 +243,26 @@ func (c *Config) SetRoots(roots []Root) error {
 	return c.update(func() { c.Roots = append([]Root(nil), roots...) })
 }
 
+// SetKeepFresh opts one repository into or out of automatic fast-forward pulls.
+func (c *Config) SetKeepFresh(path string, enabled bool) error {
+	path = ExpandPath(path)
+	if path == "" {
+		return fmt.Errorf("repository path is empty")
+	}
+	return c.update(func() {
+		kept := make([]string, 0, len(c.KeepFresh)+1)
+		for _, existing := range c.KeepFresh {
+			if ExpandPath(existing) != path {
+				kept = append(kept, existing)
+			}
+		}
+		if enabled {
+			kept = append(kept, path)
+		}
+		c.KeepFresh = kept
+	})
+}
+
 // SetClickAction updates the click behaviour and persists.
 func (c *Config) SetClickAction(action, custom string) error {
 	return c.update(func() { c.ClickAction = action; c.CustomCommand = custom })
@@ -257,6 +291,7 @@ func (c *Config) update(mutate func()) error {
 type persisted struct {
 	roots                []Root
 	ignore               []string
+	keepFresh            []string
 	fetchIntervalMinutes int
 	localRefreshSeconds  int
 	clickAction          string
@@ -269,6 +304,7 @@ func (c *Config) snapshot() persisted {
 	return persisted{
 		roots:                append([]Root(nil), c.Roots...),
 		ignore:               append([]string(nil), c.Ignore...),
+		keepFresh:            append([]string(nil), c.KeepFresh...),
 		fetchIntervalMinutes: c.FetchIntervalMinutes,
 		localRefreshSeconds:  c.LocalRefreshSeconds,
 		clickAction:          c.ClickAction,
@@ -279,7 +315,7 @@ func (c *Config) snapshot() persisted {
 }
 
 func (c *Config) restore(p persisted) {
-	c.Roots, c.Ignore = p.roots, p.ignore
+	c.Roots, c.Ignore, c.KeepFresh = p.roots, p.ignore, p.keepFresh
 	c.FetchIntervalMinutes, c.LocalRefreshSeconds = p.fetchIntervalMinutes, p.localRefreshSeconds
 	c.ClickAction, c.CustomCommand = p.clickAction, p.customCommand
 	c.LaunchAtLogin = p.launchAtLogin
@@ -297,6 +333,7 @@ func (c *Config) Reload() error {
 	c.mu.Lock()
 	c.Roots = fresh.Roots
 	c.Ignore = fresh.Ignore
+	c.KeepFresh = fresh.KeepFresh
 	c.FetchIntervalMinutes = fresh.FetchIntervalMinutes
 	c.LocalRefreshSeconds = fresh.LocalRefreshSeconds
 	c.ClickAction = fresh.ClickAction

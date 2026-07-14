@@ -20,7 +20,8 @@ See [Platform Integrations](PLATFORM_INTEGRATIONS.md) for the full split.
 - **Behind tracking** — a background `git fetch` (working tree never touched) reports how many **commits** and **lines** each repo is behind.
 - **Instant startup** — last-known state is cached and painted before any git runs.
 - **Search popover** — left-click the tray icon for a searchable, virtualized list.
-- **Inline detail** — click a repo to expand its path and latest commit times; hover to reveal **pull** (fast-forward) and **open** icons.
+- **Inline detail** — click a repo to expand its path and latest commit times; hover to reveal **pull** when behind or **keep fresh** when synced, plus **open**.
+- **Keep fresh** — opt a synced repo into safe automatic fast-forward pulls when a later refresh finds remote commits.
 - **Update all** — one button fast-forwards every repo that's behind.
 - **In-app settings** — roots, intervals, open action, and launch-at-login.
 

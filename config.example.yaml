@@ -23,6 +23,10 @@ ignore:
   - .cache
   - Library
 
+# Repositories to fast-forward automatically when remote changes are found.
+# This can also be toggled from the row's "Keep fresh" icon.
+keepFresh: []
+
 # How often to run `git fetch` for each repo to learn about remote changes.
 # Fetch only updates remote-tracking refs; your working tree is never touched.
 fetchIntervalMinutes: 30

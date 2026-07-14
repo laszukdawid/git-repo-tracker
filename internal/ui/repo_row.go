@@ -115,7 +115,7 @@ func (r *iconButtonRenderer) Destroy()                     {}
 // shows a tinted status glyph, the repo name with its branch inline, and (when
 // behind) a right-aligned "↓N". Clicking the body expands an inline detail panel
 // indented under the name (the row grows via list.SetItemHeight). Hovering reveals
-// pull / open action chips in place of the count.
+// update / open action chips in place of the count.
 type repoRow struct {
 	widget.BaseWidget
 
@@ -131,6 +131,7 @@ type repoRow struct {
 	branch     *canvas.Text
 	count      *canvas.Text // "↓N" behind count
 	pullBtn    *iconButton
+	freshBtn   *iconButton
 	openBtn    *iconButton
 	spinner    *widget.Activity
 	rightBox   *fyne.Container
@@ -151,6 +152,7 @@ type repoRow struct {
 
 	onExpand func(monitor.RepoState)
 	onPull   func(monitor.RepoState)
+	onFresh  func(monitor.RepoState)
 	onOpen   func(monitor.RepoState)
 }
 
@@ -187,6 +189,12 @@ func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
 				r.onPull(r.repo)
 			}
 		})
+	r.freshBtn = newIconButton(theme.ViewRefreshIcon(), theme.ColorNamePrimary, "Keep fresh",
+		pal.openBtnBg, pal.btnHover, func() {
+			if r.onFresh != nil {
+				r.onFresh(r.repo)
+			}
+		})
 	r.openBtn = newIconButton(theme.FolderOpenIcon(), colorNameMuted, "Open folder",
 		pal.openBtnBg, pal.btnHover, func() {
 			if r.onOpen != nil {
@@ -195,7 +203,7 @@ func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
 		})
 	r.spinner = widget.NewActivity()
 	r.spinner.Hide()
-	r.rightBox = container.New(&rowButtonsLayout{}, r.pullBtn, r.openBtn, r.spinner)
+	r.rightBox = container.New(&rowButtonsLayout{}, r.pullBtn, r.freshBtn, r.openBtn, r.spinner)
 	r.glyphSlot = container.NewStack()
 	r.detailBox = container.New(&tightVBox{gap: 4})
 	r.detailBox.Hide()
@@ -207,7 +215,7 @@ func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
 // Configure rebinds the row to a repo and its state/callbacks. widget.List
 // recycles row objects during scroll, so this runs on every listUpdate.
 func (r *repoRow) Configure(repo monitor.RepoState, expanded, pulling bool, detail *monitor.Details,
-	onExpand, onPull, onOpen func(monitor.RepoState)) {
+	onExpand, onPull, onFresh, onOpen func(monitor.RepoState)) {
 
 	if r.repo.Path != repo.Path {
 		r.resetHover()
@@ -215,7 +223,15 @@ func (r *repoRow) Configure(repo monitor.RepoState, expanded, pulling bool, deta
 	r.repo = repo
 	r.expanded = expanded
 	r.pulling = pulling
-	r.onExpand, r.onPull, r.onOpen = onExpand, onPull, onOpen
+	r.onExpand, r.onPull, r.onFresh, r.onOpen = onExpand, onPull, onFresh, onOpen
+	if repo.KeepFresh {
+		r.freshBtn.tip = "Stop keeping fresh"
+		r.freshBtn.rest = r.pal.pullBtnBg
+	} else {
+		r.freshBtn.tip = "Keep fresh"
+		r.freshBtn.rest = r.pal.openBtnBg
+	}
+	r.freshBtn.Refresh()
 
 	kind, gcol, dim := repoGlyph(repo, r.pal)
 	r.dim = dim
@@ -432,12 +448,13 @@ func (r *repoRow) line(s string, col color.Color, size float32, bold, mono, scro
 }
 
 // updateActions sets which right-side widgets are visible: a spinner while
-// pulling, the action chips on hover (pull only when there's something to pull),
+// pulling, the action chips on hover (pull when behind, keep-fresh when synced),
 // otherwise the behind count and error marker.
 func (r *repoRow) updateActions() {
 	showCount := false
 	if r.pulling {
 		r.pullBtn.Hide()
+		r.freshBtn.Hide()
 		r.openBtn.Hide()
 		r.spinner.Show()
 		r.spinner.Start()
@@ -447,12 +464,15 @@ func (r *repoRow) updateActions() {
 		if r.hovered {
 			if r.repo.Behind > 0 {
 				r.pullBtn.Show()
+				r.freshBtn.Hide()
 			} else {
 				r.pullBtn.Hide()
+				r.freshBtn.Show()
 			}
 			r.openBtn.Show()
 		} else {
 			r.pullBtn.Hide()
+			r.freshBtn.Hide()
 			r.openBtn.Hide()
 			showCount = true
 		}
@@ -486,7 +506,7 @@ func (r *repoRow) MouseMoved(ev *desktop.MouseEvent) {
 		return
 	}
 	var hovered *iconButton
-	for _, b := range []*iconButton{r.pullBtn, r.openBtn} {
+	for _, b := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
 		in := false
 		if b.Visible() {
 			origin := r.rightBox.Position().Add(b.Position())
@@ -511,6 +531,7 @@ func (r *repoRow) MouseMoved(ev *desktop.MouseEvent) {
 // child), so it clears only the body's hover — detailHovered may keep the row hovered.
 func (r *repoRow) MouseOut() {
 	r.pullBtn.setHovered(false)
+	r.freshBtn.setHovered(false)
 	r.openBtn.setHovered(false)
 	if r.tips != nil {
 		r.tips.hide()
@@ -531,6 +552,7 @@ func (r *repoRow) setDetailHovered(h bool) {
 // resetHover clears all hover sources; used when a recycled row is rebound.
 func (r *repoRow) resetHover() {
 	r.pullBtn.setHovered(false)
+	r.freshBtn.setHovered(false)
 	r.openBtn.setHovered(false)
 	r.selfHovered = false
 	r.detailHovered = false

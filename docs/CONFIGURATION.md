@@ -43,6 +43,10 @@ ignore:
   - .cache
   - Library
 
+# Repositories automatically fast-forwarded when a refresh finds them behind.
+keepFresh:
+  - ~/projects/example
+
 # How often to run `git fetch` for each repo (minutes).
 fetchIntervalMinutes: 30
 
@@ -71,6 +75,7 @@ launchAtLogin: false
 | `roots[].depth` | int | `5` | Max depth below the root; `0` = unlimited |
 | `roots[].autoFetch` | bool | `false` | Per-root: whether the remote loop fetches these repos |
 | `ignore` | []string | `[node_modules, vendor, .Trash, .cache, Library]` | Pruned directory names |
+| `keepFresh` | []string | `[]` | Repo paths opted into automatic `git pull --ff-only`; these repos are fetched even when their root has `autoFetch: false` |
 | `fetchIntervalMinutes` | int | `30` | Remote (fetch) refresh cadence; ≤0 → default |
 | `localRefreshSeconds` | int | `30` | Local status cadence; ≤0 → default |
 | `clickAction` | string | `open-folder` | `open-folder` \| `terminal` \| `editor` \| `custom` |
@@ -78,6 +83,10 @@ launchAtLogin: false
 | `launchAtLogin` | bool | `false` | Reflects the actual login-item state |
 
 A starter file is also checked in as [`config.example.yaml`](https://github.com/laszukdawid/git-repo-tracker/blob/main/config.example.yaml).
+
+The row's **Keep fresh** icon toggles membership in this list. Pulls remain
+fast-forward-only; a dirty or diverged repository that cannot be updated safely
+is left unchanged and reports the pull error in its row.
 
 ## Environment variables
 

@@ -203,7 +203,7 @@ func newPopoverRow(tips *tooltipLayer, pal palette, onToggleGroup func(string)) 
 }
 
 func (p *popoverRow) Configure(it popoverItem, expanded, pulling bool, detail *monitor.Details,
-	onExpand, onPull, onOpen func(monitor.RepoState)) {
+	onExpand, onPull, onKeepFresh, onOpen func(monitor.RepoState)) {
 	if it.header {
 		p.repo.deactivate() // stop a recycled repo's marquees/spinner before hiding it
 		p.repo.Hide()
@@ -213,7 +213,7 @@ func (p *popoverRow) Configure(it popoverItem, expanded, pulling bool, detail *m
 	} else {
 		p.header.Hide()
 		p.repo.Show()
-		p.repo.Configure(it.repo, expanded, pulling, detail, onExpand, onPull, onOpen)
+		p.repo.Configure(it.repo, expanded, pulling, detail, onExpand, onPull, onKeepFresh, onOpen)
 		p.showingHeader = false
 	}
 	p.Refresh()

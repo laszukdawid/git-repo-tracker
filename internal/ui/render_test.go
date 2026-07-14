@@ -44,28 +44,28 @@ func TestPopoverRowRenders(t *testing.T) {
 
 	// Behind repo, collapsed.
 	row.Configure(popoverItem{repo: monitor.RepoState{Name: "dash", Branch: "main", Behind: 20}},
-		false, false, nil, noop, noop, noop)
+		false, false, nil, noop, noop, noop, noop)
 	assertRenders(t, row, 360)
 
 	// Dirty repo, expanded with detail.
 	row.Configure(popoverItem{repo: monitor.RepoState{Name: "api", Branch: "main", Dirty: true, Behind: 1}},
 		true, false, &monitor.Details{Path: "~/w/api", OriginRef: "origin/main", LocalHash: "a1b2c3", LocalMsg: "fix"},
-		noop, noop, noop)
+		noop, noop, noop, noop)
 	assertRenders(t, row, 360)
 
 	// Synced repo (dimmed).
 	row.Configure(popoverItem{repo: monitor.RepoState{Name: "lib", Branch: "main"}},
-		false, false, nil, noop, noop, noop)
+		false, false, nil, noop, noop, noop, noop)
 	assertRenders(t, row, 360)
 
 	// Errored repo, expanded — the detail panel surfaces the message.
 	row.Configure(popoverItem{repo: monitor.RepoState{Name: "broken", Branch: "main", FetchErr: "could not read from remote"}},
-		true, false, nil, noop, noop, noop)
+		true, false, nil, noop, noop, noop, noop)
 	assertRenders(t, row, 360)
 
 	// Group header with a behind pill.
 	row.Configure(popoverItem{header: true, root: "~/projects", count: 32, behind: 10},
-		false, false, nil, nil, nil, nil)
+		false, false, nil, nil, nil, nil, nil)
 	assertRenders(t, row, 360)
 }
 
@@ -75,19 +75,38 @@ func TestRepoRowReusesUnchangedDetailWidgets(t *testing.T) {
 	repo := monitor.RepoState{Path: "/work/api", Name: "api", Branch: "main", Behind: 1}
 	detail := &monitor.Details{Path: repo.Path, OriginRef: "origin/main", LocalHash: "a1", LocalMsg: "first"}
 
-	row.Configure(repo, true, false, detail, nil, nil, nil)
+	row.Configure(repo, true, false, detail, nil, nil, nil, nil)
 	first := row.detailBox.Objects[0]
 	repo.LastLocal = time.Now()
-	row.Configure(repo, true, false, detail, nil, nil, nil)
+	row.Configure(repo, true, false, detail, nil, nil, nil, nil)
 	if row.detailBox.Objects[0] != first {
 		t.Fatal("unchanged detail was rebuilt")
 	}
 
 	changed := *detail
 	changed.LocalMsg = "second"
-	row.Configure(repo, true, false, &changed, nil, nil, nil)
+	row.Configure(repo, true, false, &changed, nil, nil, nil, nil)
 	if row.detailBox.Objects[0] == first {
 		t.Fatal("changed detail was not rebuilt")
+	}
+}
+
+func TestRepoRowShowsKeepFreshOnlyWhenSynced(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{variant: theme.VariantDark, forced: true})
+	pal := paletteFor(theme.VariantDark)
+	row := newRepoRow(nil, pal)
+	repo := monitor.RepoState{Path: "/work/api", Name: "api", Branch: "main"}
+	row.Configure(repo, false, false, nil, nil, nil, nil, nil)
+	row.hovered = true
+	row.updateActions()
+	if !row.freshBtn.Visible() || row.pullBtn.Visible() || !row.openBtn.Visible() {
+		t.Fatalf("synced actions: fresh=%v pull=%v open=%v", row.freshBtn.Visible(), row.pullBtn.Visible(), row.openBtn.Visible())
+	}
+
+	repo.Behind = 1
+	row.Configure(repo, false, false, nil, nil, nil, nil, nil)
+	if row.freshBtn.Visible() || !row.pullBtn.Visible() || !row.openBtn.Visible() {
+		t.Fatalf("behind actions: fresh=%v pull=%v open=%v", row.freshBtn.Visible(), row.pullBtn.Visible(), row.openBtn.Visible())
 	}
 }
 

@@ -50,6 +50,7 @@ type RepoState struct {
 	LastFetch time.Time `json:"lastFetch"`
 	Err       string    `json:"err,omitempty"`      // last local-status error
 	FetchErr  string    `json:"fetchErr,omitempty"` // last fetch error
+	KeepFresh bool      `json:"-"`                  // user opted into automatic fast-forward pulls
 }
 
 // Updatable reports whether the repo is behind its remote and worth pulling.
@@ -70,6 +71,9 @@ type Manager struct {
 
 	mu    sync.RWMutex
 	repos map[string]*RepoState
+	// Different repositories may pull concurrently, but overlapping refresh loops
+	// must never run two mutating git processes in the same working tree.
+	pullLocks sync.Map // map[string]*sync.Mutex
 
 	notifyC chan struct{}
 	trigger chan struct{}
@@ -123,10 +127,13 @@ func (m *Manager) Stop() {
 // Snapshot returns a copy of all repo states, sorted by name then path, for the
 // UI to render.
 func (m *Manager) Snapshot() []RepoState {
+	keepFresh := m.cfg.KeepFreshRepos()
 	m.mu.RLock()
 	out := make([]RepoState, 0, len(m.repos))
 	for _, r := range m.repos {
-		out = append(out, *r)
+		copy := *r
+		copy.KeepFresh = keepFresh[r.Path]
+		out = append(out, copy)
 	}
 	m.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool {
@@ -157,6 +164,20 @@ func (m *Manager) Refresh() {
 	case m.trigger <- struct{}{}:
 	default: // a refresh is already queued
 	}
+}
+
+// SetKeepFresh persists whether a repository should be fast-forwarded whenever
+// a refresh discovers that it is behind. Enabling it queues a remote refresh so
+// an apparently synced repository is checked immediately.
+func (m *Manager) SetKeepFresh(path string, enabled bool) error {
+	if err := m.cfg.SetKeepFresh(path, enabled); err != nil {
+		return err
+	}
+	m.notify()
+	if enabled {
+		m.Refresh()
+	}
+	return nil
 }
 
 // RefreshNow performs a synchronous discovery + status pass for headless callers.
@@ -218,6 +239,20 @@ func (m *Manager) UpdateAll() []UpdateResult {
 // Pull fast-forwards a repo to its upstream and refreshes its status. It blocks
 // (it hits the network), so callers should invoke it from a goroutine.
 func (m *Manager) Pull(path string) error {
+	return m.pull(path, false)
+}
+
+func (m *Manager) pull(path string, recheckBehind bool) error {
+	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	if recheckBehind {
+		m.refreshOne(path)
+		if !m.canAutoPull(path) {
+			return nil
+		}
+	}
 	if err := git.Pull(m.ctx, path); err != nil {
 		m.update(path, func(r *RepoState) { r.FetchErr = err.Error() })
 		m.notify()
@@ -356,6 +391,7 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 		return
 	}
 	fetchSet := m.fetchEligible()
+	keepFresh := m.cfg.KeepFreshRepos()
 
 	jobs := make(chan string)
 	var wg sync.WaitGroup
@@ -367,7 +403,7 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 				if m.ctx.Err() != nil {
 					continue // drain remaining jobs without work
 				}
-				if withFetch && (forceFetch || fetchSet[p]) {
+				if withFetch && (forceFetch || fetchSet[p] || keepFresh[p]) {
 					if err := git.Fetch(m.ctx, p); err != nil {
 						m.update(p, func(r *RepoState) { r.FetchErr = err.Error() })
 					} else {
@@ -375,6 +411,11 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 					}
 				}
 				m.refreshOne(p)
+				if keepFresh[p] && m.canAutoPull(p) {
+					if err := m.pull(p, true); err != nil {
+						m.log("keep fresh pull %s failed: %v", p, err)
+					}
+				}
 				m.notify()
 			}
 		}()
@@ -392,6 +433,13 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 
 	m.persist()
 	m.notify()
+}
+
+func (m *Manager) canAutoPull(path string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	r, ok := m.repos[path]
+	return ok && r.Behind > 0 && r.Err == "" && r.FetchErr == ""
 }
 
 // refreshOne recomputes a single repo's local status and behind/line stats.

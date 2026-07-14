@@ -61,6 +61,35 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSetKeepFreshRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := c.SetKeepFresh(repo, true); err != nil {
+		t.Fatal(err)
+	}
+	if !c.KeepFreshRepos()[repo] {
+		t.Fatal("repository was not marked keep-fresh")
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.KeepFreshRepos()[repo] {
+		t.Fatal("keep-fresh repository was not persisted")
+	}
+	if err := reloaded.SetKeepFresh(repo, false); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.KeepFreshRepos()[repo] {
+		t.Fatal("repository remained keep-fresh after disabling it")
+	}
+}
+
 func TestThemeDefaultsToSystem(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("roots: []\n"), 0o600); err != nil {

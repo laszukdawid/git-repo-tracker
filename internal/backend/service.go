@@ -60,6 +60,11 @@ func (s *Service) Counts() (total, behind int) { return s.mgr.Counts() }
 // Pull fast-forwards one repository.
 func (s *Service) Pull(path string) error { return s.mgr.Pull(path) }
 
+// SetKeepFresh opts a repository into or out of automatic fast-forward pulls.
+func (s *Service) SetKeepFresh(path string, enabled bool) error {
+	return s.mgr.SetKeepFresh(path, enabled)
+}
+
 // UpdateAll fetches every tracked remote, then fast-forwards every repository
 // that is behind it. Manual updates ignore the background auto-fetch setting.
 func (s *Service) UpdateAll() []monitor.UpdateResult { return s.mgr.UpdateAll() }
