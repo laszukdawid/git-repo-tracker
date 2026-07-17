@@ -110,6 +110,65 @@ func TestRepoRowShowsKeepFreshOnlyWhenSynced(t *testing.T) {
 	}
 }
 
+func TestRepoRowNamePriorityWrapsBranch(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{variant: theme.VariantDark, forced: true})
+	pal := paletteFor(theme.VariantDark)
+	row := newRepoRow(nil, pal)
+	rr := test.WidgetRenderer(row).(*repoRowRenderer)
+	width := estRowWidth()
+
+	// Short name + very long branch: they can't share a line. The name keeps its full
+	// text (priority) and the branch drops onto a second line under it. This is the
+	// reported regression — previously the name was truncated to ~one glyph.
+	row.Configure(monitor.RepoState{Path: "/w/hoot", Name: "hoot", Branch: "PLATFORM-1553-cache-update-check"},
+		false, false, nil, nil, nil, nil, nil)
+	if !row.twoLine {
+		t.Fatal("short name + long branch should wrap onto two lines")
+	}
+	twoLineH := row.MinSize().Height
+	rr.Layout(fyne.NewSize(width, twoLineH))
+	if row.name.Text != "hoot" {
+		t.Errorf("name kept priority but was truncated to %q", row.name.Text)
+	}
+	if row.branch.Position().Y <= row.name.Position().Y {
+		t.Errorf("wrapped branch should sit below the name: nameY=%v branchY=%v",
+			row.name.Position().Y, row.branch.Position().Y)
+	}
+
+	// Both short: one line, branch inline to the right of the name, and a shorter row.
+	row.Configure(monitor.RepoState{Path: "/w/api", Name: "api", Branch: "main"},
+		false, false, nil, nil, nil, nil, nil)
+	if row.twoLine {
+		t.Fatal("short name + short branch should stay on one line")
+	}
+	oneLineH := row.MinSize().Height
+	rr.Layout(fyne.NewSize(width, oneLineH))
+	if row.name.Text != "api" {
+		t.Errorf("short name should be shown in full, got %q", row.name.Text)
+	}
+	if row.branch.Position().X <= row.name.Position().X {
+		t.Error("inline branch should sit to the right of the name")
+	}
+	if twoLineH <= oneLineH {
+		t.Errorf("wrapped row (%v) should be taller than a one-line row (%v)", twoLineH, oneLineH)
+	}
+
+	// A name too long even by itself is truncated with an ellipsis on line 1, and the
+	// branch still drops to line 2 rather than sharing the crowded first line.
+	row.Configure(monitor.RepoState{Path: "/w/x", Name: "a-very-long-repository-name-that-cannot-fit-on-one-line", Branch: "feature/some-long-branch"},
+		false, false, nil, nil, nil, nil, nil)
+	if !row.twoLine {
+		t.Fatal("overlong name + branch should wrap")
+	}
+	rr.Layout(fyne.NewSize(width, row.MinSize().Height))
+	if r := []rune(row.name.Text); len(r) == 0 || r[len(r)-1] != '…' {
+		t.Errorf("overlong name should be truncated with an ellipsis, got %q", row.name.Text)
+	}
+	if row.branch.Position().Y <= row.name.Position().Y {
+		t.Error("branch should still drop below an overlong name")
+	}
+}
+
 func TestMarqueeOverflowAndText(t *testing.T) {
 	test.NewApp().Settings().SetTheme(glassTheme{variant: theme.VariantDark, forced: true})
 	col := paletteFor(theme.VariantDark).faint

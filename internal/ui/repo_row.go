@@ -24,6 +24,7 @@ const (
 	glyphColW    = 18 // status-glyph column width
 	glyphGap     = 11 // gap between the glyph column and the name
 	branchGap    = 6  // gap between the repo name and its inline branch
+	lineGap      = 2  // gap between the name line and the branch line (two-line mode)
 	detailIndent = 43 // left indent of the expanded detail panel (aligns under name)
 	nameSize     = 13.5
 	branchSize   = 11
@@ -32,6 +33,39 @@ const (
 	actionBox    = 28 // hover action chip size
 	actionRadius = 7
 )
+
+// branchLabel is the text shown for a repo's branch, using an em dash when unknown.
+func branchLabel(branch string) string {
+	if branch == "" {
+		return "—"
+	}
+	return branch
+}
+
+// availTitleWidth is the horizontal space a row of total width rowW leaves for the
+// name+branch title line: the row minus the left glyph column and the reserved
+// right-edge area (behind count / hover action chips).
+func availTitleWidth(rowW float32) float32 {
+	return rowW - float32(2*rowHPad+glyphColW+glyphGap+rightReserve)
+}
+
+// estRowWidth approximates the width a repo row is given inside the popover list.
+// A row's height comes from MinSize(), which has no width, yet the height depends on
+// whether the title wraps to a second line — so that decision is made in Configure
+// from this estimate. The popover isn't resizable, so it matches the width Layout
+// later receives; it is deliberately on the narrow side so a title that wraps here
+// still fits the real, equal-or-wider row (the name keeps priority and is never
+// squeezed down to fit the branch inline).
+func estRowWidth() float32 { return popoverWidth - 4*theme.Padding() }
+
+// titleWraps reports whether a repo's name and branch can't share one title line at
+// the given available width, so the branch drops onto a second line under the name.
+// Shared by the row layout and the popover's height estimate so both agree on height.
+func titleWraps(name, branch string, avail float32) bool {
+	nameW := fyne.MeasureText(name, nameSize, fyne.TextStyle{Bold: true}).Width
+	branchW := fyne.MeasureText(branch, branchSize, fyne.TextStyle{Monospace: true}).Width
+	return nameW+branchGap+branchW > avail
+}
 
 // iconButton is a minimal tappable icon chip with its own hover highlight. It is
 // NOT Hoverable: the row below tracks the pointer itself (via MouseMoved) and
@@ -127,6 +161,8 @@ type repoRow struct {
 
 	glyphSlot  *fyne.Container // holds the current status glyph (rebuilt per repo)
 	fullName   string          // untruncated repo name (name.Text is truncated to fit in Layout)
+	fullBranch string          // untruncated branch label (branch.Text is truncated to fit in Layout)
+	twoLine    bool            // branch dropped onto a second line under the name (title won't fit on one)
 	name       *canvas.Text
 	branch     *canvas.Text
 	count      *canvas.Text // "↓N" behind count
@@ -245,11 +281,12 @@ func (r *repoRow) Configure(repo monitor.RepoState, expanded, pulling bool, deta
 	} else {
 		r.name.Color = r.pal.rowName
 	}
-	branch := repo.Branch
-	if branch == "" {
-		branch = "—"
-	}
-	r.branch.Text = branch
+	r.fullBranch = branchLabel(repo.Branch)
+	r.branch.Text = r.fullBranch
+	// Decide up front whether the name+branch fit on one line; if not, the branch
+	// drops below the name (which keeps priority). This drives the row height, which
+	// the list reads from MinSize() before Layout runs — hence the fixed-width estimate.
+	r.twoLine = titleWraps(r.fullName, r.fullBranch, availTitleWidth(estRowWidth()))
 
 	if repo.Behind > 0 {
 		r.count.Text = fmt.Sprintf("↓%d", repo.Behind)
@@ -599,7 +636,11 @@ func (rr *repoRowRenderer) lineHeight() float32 {
 }
 
 func (rr *repoRowRenderer) titleHeight() float32 {
-	return rowVPad*2 + rr.lineHeight()
+	h := rowVPad*2 + rr.lineHeight()
+	if rr.row.twoLine {
+		h += rr.row.branch.MinSize().Height + lineGap
+	}
+	return h
 }
 
 func (rr *repoRowRenderer) Layout(size fyne.Size) {
@@ -607,22 +648,39 @@ func (rr *repoRowRenderer) Layout(size fyne.Size) {
 	lineH := rr.lineHeight()
 	top := float32(rowVPad)
 
-	// Status-glyph column.
+	// Status-glyph column (aligned with the name line).
 	rr.row.glyphSlot.Move(fyne.NewPos(rowHPad, top))
 	rr.row.glyphSlot.Resize(fyne.NewSize(glyphColW, lineH))
 
-	// Name + inline branch. The name is truncated so name + branch never bleed into
-	// the reserved right-edge area (the behind count, or the hover action chips).
+	// Name + branch. The name has priority: it takes the full title width, and only
+	// when name + branch can't share one line does the branch drop below it. Both are
+	// truncated to their own available width so neither bleeds into the reserved
+	// right-edge area (the behind count, or the hover action chips).
 	nameX := float32(rowHPad + glyphColW + glyphGap)
-	branchSz := rr.row.branch.MinSize()
 	titleRight := size.Width - rowHPad - rightReserve
-	availName := titleRight - nameX - branchGap - branchSz.Width
-	rr.row.name.Text = truncateToWidth(rr.row.fullName, availName, nameSize, rr.row.name.TextStyle)
-	nameSz := rr.row.name.MinSize()
-	rr.row.name.Move(fyne.NewPos(nameX, top+(lineH-nameSz.Height)/2))
-	rr.row.name.Resize(nameSz)
-	rr.row.branch.Move(fyne.NewPos(nameX+nameSz.Width+branchGap, top+(lineH-branchSz.Height)/2))
-	rr.row.branch.Resize(branchSz)
+	if rr.row.twoLine {
+		rr.row.name.Text = truncateToWidth(rr.row.fullName, titleRight-nameX, nameSize, rr.row.name.TextStyle)
+		nameSz := rr.row.name.MinSize()
+		rr.row.name.Move(fyne.NewPos(nameX, top+(lineH-nameSz.Height)/2))
+		rr.row.name.Resize(nameSz)
+
+		// Branch on its own line, spanning to the right padding (the count/chips sit on
+		// the name line, so the branch line is free to use the full width).
+		rr.row.branch.Text = truncateToWidth(rr.row.fullBranch, size.Width-rowHPad-nameX, branchSize, rr.row.branch.TextStyle)
+		branchSz := rr.row.branch.MinSize()
+		rr.row.branch.Move(fyne.NewPos(nameX, top+lineH+lineGap))
+		rr.row.branch.Resize(branchSz)
+	} else {
+		rr.row.branch.Text = rr.row.fullBranch
+		branchSz := rr.row.branch.MinSize()
+		availName := titleRight - nameX - branchGap - branchSz.Width
+		rr.row.name.Text = truncateToWidth(rr.row.fullName, availName, nameSize, rr.row.name.TextStyle)
+		nameSz := rr.row.name.MinSize()
+		rr.row.name.Move(fyne.NewPos(nameX, top+(lineH-nameSz.Height)/2))
+		rr.row.name.Resize(nameSz)
+		rr.row.branch.Move(fyne.NewPos(nameX+nameSz.Width+branchGap, top+(lineH-branchSz.Height)/2))
+		rr.row.branch.Resize(branchSz)
+	}
 
 	// Right edge: hover action chips, else the behind count (+ error marker).
 	rb := rr.row.rightBox.MinSize()

@@ -573,7 +573,7 @@ func (a *App) listContentHeight() float32 {
 		case a.expandedPath != "" && it.repo.Path == a.expandedPath:
 			total += a.expandedRowHeight(it.repo)
 		default:
-			total += a.collapsedRowHeight()
+			total += a.collapsedRowHeightFor(it.repo)
 		}
 	}
 	return total + theme.Padding()*float32(n-1)
@@ -595,6 +595,31 @@ func (a *App) collapsedRowHeight() float32 {
 		probe.repo.clearMarquees()
 	}
 	return a.collapsedRow
+}
+
+// collapsedRowTwoLineHeight is the height of a collapsed repo row whose branch has
+// wrapped onto a second line under the name. Like collapsedRowHeight it's constant
+// for the theme, so it's measured once via a throwaway probe and memoised.
+func (a *App) collapsedRowTwoLineHeight() float32 {
+	if a.collapsedRow2 == 0 {
+		probe := a.probeRow()
+		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag", Branch: "main"}}, false, false, nil, nil, nil, nil, nil)
+		probe.repo.twoLine = true // force the wrapped layout so MinSize includes the branch line
+		a.collapsedRow2 = probe.MinSize().Height
+		probe.repo.clearMarquees()
+	}
+	return a.collapsedRow2
+}
+
+// collapsedRowHeightFor returns the collapsed height a repo row will take, picking
+// the taller two-line height when its name + branch won't fit on one line. It uses
+// the same wrap test as the row itself so the popover's height estimate matches what
+// listUpdate sets per row.
+func (a *App) collapsedRowHeightFor(repo monitor.RepoState) float32 {
+	if titleWraps(repo.Name, branchLabel(repo.Branch), availTitleWidth(estRowWidth())) {
+		return a.collapsedRowTwoLineHeight()
+	}
+	return a.collapsedRowHeight()
 }
 
 // groupHeaderHeight is the constant height of a scan-root section header, memoised

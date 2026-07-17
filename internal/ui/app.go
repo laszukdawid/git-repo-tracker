@@ -94,8 +94,9 @@ type App struct {
 	filter       filterMode
 	sort         sortMode
 	groupCount   int             // distinct scan-root sections currently shown (footer "N roots")
-	collapsedRow float32         // memoised height of a collapsed repo row
-	groupRowH    float32         // memoised height of a group-header row
+	collapsedRow  float32        // memoised height of a collapsed repo row (title on one line)
+	collapsedRow2 float32        // memoised height of a collapsed repo row (branch wrapped below the name)
+	groupRowH     float32        // memoised height of a group-header row
 	collapsedGrp map[string]bool // scan roots the user has folded closed
 
 	popVisible    bool                        // whether the popover is currently shown (for tray toggle)
