@@ -47,6 +47,19 @@ func (s *Service) Stop() { s.mgr.Stop() }
 // Refresh requests a non-blocking discovery + fetch pass.
 func (s *Service) Refresh() { s.mgr.Refresh() }
 
+// SetOnActivity installs the callback fired when background progress changes.
+// Frontends that narrate what the daemon is doing use this instead of onChange,
+// which is debounced for a much heavier full rebuild.
+func (s *Service) SetOnActivity(fn func()) { s.mgr.SetOnActivity(fn) }
+
+// Activity reports what the monitor is doing right now.
+func (s *Service) Activity() monitor.Activity { return s.mgr.Activity() }
+
+// DrainActivityEvents removes and returns completions queued since the last call.
+func (s *Service) DrainActivityEvents() []monitor.ActivityEvent {
+	return s.mgr.DrainActivityEvents()
+}
+
 // RefreshNow runs a blocking discovery + status pass. Use withFetch sparingly:
 // it can hit the network for every auto-fetch root.
 func (s *Service) RefreshNow(withFetch bool) { s.mgr.RefreshNow(withFetch) }
@@ -71,3 +84,34 @@ func (s *Service) UpdateAll() []monitor.UpdateResult { return s.mgr.UpdateAll() 
 
 // Details returns expandable detail data for one repository.
 func (s *Service) Details(path string) monitor.Details { return s.mgr.Details(path) }
+
+// Branches lists a repository's local branches plus the remote-only ones. It
+// blocks on git and is not cached, so callers should fetch it lazily.
+func (s *Service) Branches(path string) monitor.BranchList { return s.mgr.Branches(path) }
+
+// FetchRepo fetches one repository on request, regardless of autoFetch.
+// It reports how many remote-tracking refs the fetch moved.
+func (s *Service) FetchRepo(path string) (int, error) { return s.mgr.FetchRepo(path) }
+
+// PullBranch fast-forwards one branch without touching the working tree.
+func (s *Service) PullBranch(path, branch string) error { return s.mgr.PullBranch(path, branch) }
+
+// SyncBranch fetches, then does whatever the branch actually needs: fast-forward,
+// push, or merge its upstream in. It reports which.
+func (s *Service) SyncBranch(path, branch string) (monitor.BranchAction, error) {
+	return s.mgr.SyncBranch(path, branch)
+}
+
+// PushBranch publishes one branch to its upstream, never forced.
+func (s *Service) PushBranch(path, branch string) error {
+	return s.mgr.PushBranch(path, branch)
+}
+
+// TrackBranch creates a local branch tracking the remote one of the same name.
+func (s *Service) TrackBranch(path, branch string) error { return s.mgr.TrackBranch(path, branch) }
+
+// EnsureBranchWorktree reuses the checkout holding a branch or creates a linked
+// worktree for it beside the repository.
+func (s *Service) EnsureBranchWorktree(path string, branch monitor.BranchInfo) (string, error) {
+	return s.mgr.EnsureBranchWorktree(path, branch)
+}

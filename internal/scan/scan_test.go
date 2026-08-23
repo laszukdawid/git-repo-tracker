@@ -52,6 +52,21 @@ func TestDiscoverIgnoredDirIsRepo(t *testing.T) {
 	}
 }
 
+// Removing the managed-directory guard must make this fail: worktrees created
+// by the branch editor action are checkouts, not independent repositories to
+// show a second time in the tray.
+func TestDiscoverSkipsManagedWorktreesWithoutUserIgnoreRule(t *testing.T) {
+	base := t.TempDir()
+	mkRepo(t, filepath.Join(base, "app"))
+	mkRepo(t, filepath.Join(base, ".worktrees", "app", "feature", "login"))
+
+	got := Discover(context.Background(), []config.Root{{Path: base}}, nil)
+	want := []string{filepath.Join(base, "app")}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Discover() = %v, want %v (managed worktrees must stay hidden)", got, want)
+	}
+}
+
 func TestDiscoverDepthLimit(t *testing.T) {
 	base := t.TempDir()
 	mkRepo(t, filepath.Join(base, "a", "b", "c", "deep")) // depth 4 below base

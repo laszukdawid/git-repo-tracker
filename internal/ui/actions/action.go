@@ -20,7 +20,30 @@ func Run(action, custom, path string) error {
 		return err
 	}
 	cmd.Env = git.Env()
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Reap the child once it exits; without Wait a long-running tray process
+	// accumulates zombie entries for every launched helper.
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+// RunArgs launches an already-built argv. It shares Run's environment handling —
+// the augmented PATH a desktop session would have — and its reaping, so callers
+// that assemble their own command (opening a repository in a chosen editor, say)
+// do not each reinvent both.
+func RunArgs(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("nothing to run")
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = git.Env()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func Command(action, custom, path string) (*exec.Cmd, error) {
@@ -28,7 +51,12 @@ func Command(action, custom, path string) (*exec.Cmd, error) {
 	case config.ActionTerminal:
 		return terminalCommand(path), nil
 	case config.ActionEditor:
-		return exec.Command("code", path), nil
+		// Superseded by the row's editor chip, which asks what is actually
+		// installed. This stays for configurations that still name it, and now
+		// resolves rather than assuming VS Code's CLI is on PATH — which is what
+		// made the old hard-coded `code` fail silently for everyone without it.
+		args, _ := ResolveEditorCommand(path)
+		return exec.Command(args[0], args[1:]...), nil
 	case config.ActionCustom:
 		args := splitArgs(custom)
 		if len(args) == 0 {
@@ -44,6 +72,31 @@ func Command(action, custom, path string) (*exec.Cmd, error) {
 	default: // ActionOpenFolder
 		return fileManagerCommand(path), nil
 	}
+}
+
+// ResolveEditorCommand returns the exact argv used by the legacy editor click
+// action. fallback reports that resolution failed and Command will retain its
+// historical `code` fallback.
+func ResolveEditorCommand(dir string) (args []string, fallback bool) {
+	if args, err := editorArgs(dir); err == nil {
+		return args, false
+	}
+	return []string{"code", dir}, true
+}
+
+// editorArgs resolves the configured editor, if one has been chosen, into the
+// command that opens dir in it. resolveEditor is installed by the ui package,
+// which owns the setting; without it this falls back to the old behaviour.
+var resolveEditor func(dir string) ([]string, error)
+
+// SetEditorResolver installs the resolver used by the "editor" click action.
+func SetEditorResolver(fn func(dir string) ([]string, error)) { resolveEditor = fn }
+
+func editorArgs(dir string) ([]string, error) {
+	if resolveEditor == nil {
+		return nil, fmt.Errorf("no editor resolver installed")
+	}
+	return resolveEditor(dir)
 }
 
 // fileManagerCommand reveals a directory in the OS file manager.

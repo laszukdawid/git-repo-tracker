@@ -13,11 +13,11 @@ import (
 // Compact metrics for the filtering-header toggles — deliberately smaller than a
 // widget.Button so the panel stays short.
 const (
-	chipTextSize = 11
-	chipHPad     = 6
-	chipVPad     = 3
-	chipIconSize = 12
-	chipGap      = 4
+	chipTextSize = textXs
+	chipHPad     = actionLabelPad
+	chipVPad     = space3xs + 1
+	chipIconSize = textSm
+	chipGap      = actionLabelGap
 )
 
 // chipSelectedText is the label colour on a selected (accent-filled) chip; white
@@ -32,7 +32,7 @@ type segChip struct {
 	text     string
 	icon     fyne.Resource
 	selected bool
-	hovered  bool
+	state    interactionState
 	pal      palette
 	onTap    func()
 }
@@ -43,6 +43,13 @@ func newSegChip(text string, icon fyne.Resource, pal palette, onTap func()) *seg
 	return c
 }
 
+// newActionChip is a segChip used as a plain command button — it never becomes
+// selected, it just runs its action. It exists so the options panel's commands
+// sit at the same scale as the filter toggles beside them.
+func newActionChip(pal palette, text string, icon fyne.Resource, onTap func()) *segChip {
+	return newSegChip(text, icon, pal, onTap)
+}
+
 func (c *segChip) Tapped(*fyne.PointEvent) {
 	if c.onTap != nil {
 		c.onTap()
@@ -51,12 +58,42 @@ func (c *segChip) Tapped(*fyne.PointEvent) {
 
 func (c *segChip) MouseIn(*desktop.MouseEvent)    { c.setHovered(true) }
 func (c *segChip) MouseMoved(*desktop.MouseEvent) {}
-func (c *segChip) MouseOut()                      { c.setHovered(false) }
+func (c *segChip) MouseOut() {
+	c.setHovered(false)
+	c.setPressed(false)
+}
+func (c *segChip) MouseDown(*desktop.MouseEvent) { c.setPressed(true) }
+func (c *segChip) MouseUp(*desktop.MouseEvent)   { c.setPressed(false) }
 
 func (c *segChip) setHovered(h bool) {
-	if c.hovered != h {
-		c.hovered = h
+	if c.state.setHovered(h) {
 		c.Refresh()
+	}
+}
+
+func (c *segChip) setPressed(v bool) {
+	if c.state.setPressed(v) {
+		c.Refresh()
+	}
+}
+
+func (c *segChip) FocusGained() {
+	if c.state.setFocused(true) {
+		c.Refresh()
+	}
+}
+
+func (c *segChip) FocusLost() {
+	if c.state.setFocused(false) {
+		c.Refresh()
+	}
+}
+
+func (c *segChip) TypedRune(rune) {}
+
+func (c *segChip) TypedKey(ev *fyne.KeyEvent) {
+	if ev.Name == fyne.KeySpace || ev.Name == fyne.KeyReturn || ev.Name == fyne.KeyEnter {
+		keyboardActivate(&c.state, c.Refresh, func() { c.Tapped(nil) })
 	}
 }
 
@@ -69,7 +106,7 @@ func (c *segChip) setSelected(s bool) {
 
 func (c *segChip) CreateRenderer() fyne.WidgetRenderer {
 	bg := canvas.NewRectangle(color.Transparent)
-	bg.CornerRadius = 5
+	bg.CornerRadius = radiusSm
 	txt := canvas.NewText(c.text, c.pal.rowSub)
 	txt.TextSize = chipTextSize
 	txt.TextStyle = fyne.TextStyle{Bold: true}
@@ -103,6 +140,9 @@ func (r *segChipRenderer) MinSize() fyne.Size {
 			h = ih
 		}
 	}
+	if h < actionBox {
+		h = actionBox
+	}
 	return fyne.NewSize(w, h)
 }
 
@@ -122,14 +162,23 @@ func (r *segChipRenderer) Layout(size fyne.Size) {
 func (r *segChipRenderer) Refresh() {
 	switch {
 	case r.c.selected:
-		r.bg.FillColor = r.c.pal.rowName // accent fill
+		r.bg.FillColor = r.c.pal.accent // accent fill
 		r.txt.Color = chipSelectedText
-	case r.c.hovered:
+	case r.c.state.active():
 		r.bg.FillColor = r.c.pal.btnHover
 		r.txt.Color = r.c.pal.rowSub
 	default:
 		r.bg.FillColor = color.Transparent
 		r.txt.Color = r.c.pal.rowSub
+	}
+	if r.c.state.pressed {
+		r.bg.StrokeColor = r.c.pal.accent
+		r.bg.StrokeWidth = 2
+	} else if r.c.state.focused {
+		r.bg.StrokeColor = r.c.pal.accent
+		r.bg.StrokeWidth = hairlineW
+	} else {
+		r.bg.StrokeWidth = 0
 	}
 	if r.img != nil {
 		// Tint the icon to match the label colour beside it: the muted colour normally

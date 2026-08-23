@@ -11,3 +11,9 @@ dist/
 
 # MkDocs build output
 /site/
+
+# Local session memory of the Claude "remember" plugin — never part of the project
+.remember/
+
+# JetBrains project files (created when opening the repo in IntelliJ)
+.idea/

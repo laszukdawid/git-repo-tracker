@@ -7,6 +7,146 @@ import (
 	"fyne.io/fyne/v2/theme"
 )
 
+// interactionState is the visual contract shared by hand-drawn controls.
+// Setters report whether a renderer refresh is needed.
+type interactionState struct {
+	hovered bool
+	pressed bool
+	focused bool
+}
+
+func (s *interactionState) setHovered(v bool) bool { return s.set(&s.hovered, v) }
+func (s *interactionState) setPressed(v bool) bool { return s.set(&s.pressed, v) }
+func (s *interactionState) setFocused(v bool) bool { return s.set(&s.focused, v) }
+
+func (s *interactionState) set(target *bool, v bool) bool {
+	if *target == v {
+		return false
+	}
+	*target = v
+	return true
+}
+
+func (s interactionState) active() bool { return s.hovered || s.pressed || s.focused }
+
+func (s *interactionState) clear() bool {
+	changed := s.active()
+	s.hovered, s.pressed, s.focused = false, false, false
+	return changed
+}
+
+// keyboardActivate keeps the pressed state set while the callback runs and
+// releases it on the next UI turn, leaving enough time for a visible pulse.
+func keyboardActivate(state *interactionState, refresh, tapped func()) {
+	if state.setPressed(true) {
+		refresh()
+	}
+	tapped()
+	fyne.Do(func() {
+		if state.setPressed(false) {
+			refresh()
+		}
+	})
+}
+
+func unfocusCanvasObjects(objects ...fyne.CanvasObject) {
+	app := fyne.CurrentApp()
+	if app == nil {
+		return
+	}
+	for _, object := range objects {
+		canvas := app.Driver().CanvasForObject(object)
+		if canvas == nil {
+			continue
+		}
+		focused := canvas.Focused()
+		for _, target := range objects {
+			focusable, ok := target.(fyne.Focusable)
+			if ok && focused == focusable {
+				canvas.Unfocus()
+				return
+			}
+		}
+	}
+}
+
+type sizeOverrideTheme struct {
+	fyne.Theme
+	name  fyne.ThemeSizeName
+	value float32
+}
+
+func (t sizeOverrideTheme) Size(name fyne.ThemeSizeName) float32 {
+	if name == t.name {
+		return t.value
+	}
+	return t.Theme.Size(name)
+}
+
+func searchTheme(base fyne.Theme) fyne.Theme {
+	return sizeOverrideTheme{Theme: base, name: theme.SizeNameInnerPadding, value: searchInnerPad}
+}
+
+// actionClusterLayout packs compact action targets with the shared sibling gap.
+type actionClusterLayout struct{}
+
+func (actionClusterLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	x := float32(0)
+	for _, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		object.Move(fyne.NewPos(x, (size.Height-itemSize.Height)/2))
+		object.Resize(itemSize)
+		x += itemSize.Width + actionSiblingGap
+	}
+}
+
+func (actionClusterLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	var width, height float32
+	visible := 0
+	for _, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		width += itemSize.Width
+		height = max(height, itemSize.Height)
+		visible++
+	}
+	if visible > 1 {
+		width += actionSiblingGap * float32(visible-1)
+	}
+	return fyne.NewSize(width, height)
+}
+
+// searchToolbarLayout gives the search field explicit breathing room before
+// the fixed-size action cluster.
+type searchToolbarLayout struct{}
+
+func (searchToolbarLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) != 2 {
+		return
+	}
+	field, toolbar := objects[0], objects[1]
+	toolbarSize := toolbar.MinSize()
+	toolbarX := max(float32(0), size.Width-toolbarSize.Width)
+	toolbar.Move(fyne.NewPos(toolbarX, (size.Height-toolbarSize.Height)/2))
+	toolbar.Resize(toolbarSize)
+	fieldWidth := max(float32(0), toolbarX-actionClusterGap)
+	field.Move(fyne.NewPos(0, 0))
+	field.Resize(fyne.NewSize(fieldWidth, size.Height))
+}
+
+func (searchToolbarLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	if len(objects) != 2 {
+		return fyne.NewSize(0, 0)
+	}
+	field, toolbar := objects[0].MinSize(), objects[1].MinSize()
+	return fyne.NewSize(field.Width+actionClusterGap+toolbar.Width, max(field.Height, toolbar.Height))
+}
+
 // glassTheme is a "glassy" RepoZ-like theme with a dark and a light variant. True
 // OS translucency isn't reachable through stock Fyne, so we approximate it with
 // deep translucent darks (or soft whites), an accent blue, and tight padding; the
@@ -16,6 +156,7 @@ import (
 // renders the chosen variant, so "Light"/"Dark" settings override the system
 // appearance; with forced unset it follows the OS ("System").
 type glassTheme struct {
+	family  paletteFamily
 	variant fyne.ThemeVariant
 	forced  bool
 }
@@ -46,77 +187,51 @@ func (g glassTheme) Color(name fyne.ThemeColorName, v fyne.ThemeVariant) color.C
 	}
 	switch name {
 	case colorNameChipIcon:
-		return paletteFor(v).rowSub // same muted colour as an unselected chip's label
+		return paletteFor(g.family, v).rowSub // same muted colour as an unselected chip's label
 	case colorNameChipIconOn:
 		return chipSelectedText // same colour as a selected chip's label
 	case colorNameBehind:
-		return paletteFor(v).statusBehind
+		return paletteFor(g.family, v).statusBehind
 	case colorNameSynced:
-		return paletteFor(v).statusSynced
+		return paletteFor(g.family, v).statusSynced
 	case colorNameMuted:
-		return paletteFor(v).muted
+		return paletteFor(g.family, v).muted
 	}
-	if v == theme.VariantLight {
-		return lightColor(name)
-	}
-	return darkColor(name)
+	return stockColor(name, paletteFor(g.family, v), v)
 }
 
-func darkColor(name fyne.ThemeColorName) color.Color {
+// stockColor answers Fyne's own widgets from the active palette, so a stock
+// Entry, Button or Select is coloured by the same decisions as the hand-drawn
+// rows beside it. Previously these were a separate hard-coded pair of light and
+// dark sets, which is how the two drifted apart.
+func stockColor(name fyne.ThemeColorName, p palette, v fyne.ThemeVariant) color.Color {
 	switch name {
 	case theme.ColorNameBackground:
-		return color.NRGBA{R: 18, G: 21, B: 27, A: 250}
+		return p.gradTop
 	case theme.ColorNameForeground:
-		return color.NRGBA{R: 236, G: 240, B: 246, A: 255}
+		return p.rowName
 	case theme.ColorNameInputBackground:
-		return color.NRGBA{R: 31, G: 36, B: 46, A: 235}
+		return p.fieldBg
 	case theme.ColorNameButton:
-		return color.NRGBA{R: 35, G: 41, B: 52, A: 0}
+		return color.Transparent
 	case theme.ColorNameHover:
-		return color.NRGBA{R: 74, G: 144, B: 255, A: 45}
+		return p.btnHover
 	case theme.ColorNameSelection:
-		return color.NRGBA{R: 74, G: 144, B: 255, A: 70}
+		return p.pullBtnBg
+	case theme.ColorNameFocus:
+		return p.pullBtnBg
 	case theme.ColorNameSeparator:
-		return color.NRGBA{R: 255, G: 255, B: 255, A: 28}
+		return p.hairline
 	case theme.ColorNamePlaceHolder:
-		return color.NRGBA{R: 130, G: 138, B: 150, A: 255}
+		return p.faint
 	case theme.ColorNameDisabled:
-		return color.NRGBA{R: 120, G: 128, B: 140, A: 200}
+		return p.faint
 	case theme.ColorNamePrimary:
-		return color.NRGBA{R: 91, G: 157, B: 255, A: 255}
+		return p.accent
 	case theme.ColorNameScrollBar:
-		return color.NRGBA{R: 255, G: 255, B: 255, A: 40}
+		return p.toggleOffBg
 	default:
-		return theme.DefaultTheme().Color(name, theme.VariantDark)
-	}
-}
-
-func lightColor(name fyne.ThemeColorName) color.Color {
-	switch name {
-	case theme.ColorNameBackground:
-		return color.NRGBA{R: 244, G: 246, B: 250, A: 252}
-	case theme.ColorNameForeground:
-		return color.NRGBA{R: 28, G: 33, B: 42, A: 255}
-	case theme.ColorNameInputBackground:
-		return color.NRGBA{R: 255, G: 255, B: 255, A: 235}
-	case theme.ColorNameButton:
-		return color.NRGBA{R: 230, G: 234, B: 240, A: 0}
-	case theme.ColorNameHover:
-		return color.NRGBA{R: 30, G: 110, B: 230, A: 38}
-	case theme.ColorNameSelection:
-		return color.NRGBA{R: 30, G: 110, B: 230, A: 60}
-	case theme.ColorNameSeparator:
-		return color.NRGBA{R: 0, G: 0, B: 0, A: 30}
-	case theme.ColorNamePlaceHolder:
-		return color.NRGBA{R: 120, G: 128, B: 140, A: 255}
-	case theme.ColorNameDisabled:
-		return color.NRGBA{R: 150, G: 156, B: 166, A: 220}
-	case theme.ColorNamePrimary:
-		return color.NRGBA{R: 25, G: 103, B: 224, A: 255}
-	case theme.ColorNameScrollBar:
-		return color.NRGBA{R: 0, G: 0, B: 0, A: 55}
-	default:
-		return theme.DefaultTheme().Color(name, theme.VariantLight)
+		return theme.DefaultTheme().Color(name, v)
 	}
 }
 
@@ -124,12 +239,30 @@ func (glassTheme) Font(s fyne.TextStyle) fyne.Resource { return theme.DefaultThe
 
 func (glassTheme) Icon(n fyne.ThemeIconName) fyne.Resource { return theme.DefaultTheme().Icon(n) }
 
+// Size publishes the design tokens (tokens.go) that Fyne's own widgets read, so
+// a stock Entry, Button or Select picks up the same scale as the hand-drawn
+// widgets beside it.
+//
+// SizeNameInputRadius is the important one. Fyne's default is 5, which is why
+// the search field looked nearly rectangular inside a window with a 20px corner
+// — the two were simply never reconciled. widget.Entry reads this name for both
+// its box and its border on every Refresh (entry.go:181,185 and 1691-1692 in
+// v2.7.4), and widget.Button and widget.Select read it too, so one line here
+// rounds every input in the app consistently.
 func (glassTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNamePadding:
-		return 7
+		return spaceSm
 	case theme.SizeNameInnerPadding:
-		return 6
+		return spaceSm
+	case theme.SizeNameText:
+		return textMd
+	case theme.SizeNameInputRadius:
+		return radiusMd
+	case theme.SizeNameSelectionRadius:
+		return radiusSm
+	case theme.SizeNameInputBorder:
+		return hairlineW
 	default:
 		return theme.DefaultTheme().Size(name)
 	}
@@ -140,7 +273,12 @@ func (glassTheme) Size(name fyne.ThemeSizeName) float32 {
 // These are baked into canvas objects at build time (Fyne won't repaint them on a
 // theme change), so the popover content is rebuilt when the variant changes.
 type palette struct {
-	rowName    color.Color // repo title (accent blue)
+	// accent is the interactive colour: a selected chip, a switch that is on, the
+	// pull affordance. It is deliberately separate from rowName — repository
+	// names are neutral in every palette now, and the two were the same value
+	// only back when names were painted accent blue.
+	accent     color.Color
+	rowName    color.Color // repo title
 	rowSub     color.Color // status / detail lines (muted)
 	rowHover   color.Color // row background on hover
 	btnHover   color.Color // action-icon background on hover
@@ -151,10 +289,19 @@ type palette struct {
 	tipBorder  color.Color
 	tipText    color.Color
 
-	// Status semantics (option 3a) — used sparingly so the list still reads calm:
-	// amber = behind, coral = dirty, green = synced, red = error. Each has a soft
-	// tinted background for the icon chip variants.
+	// How this palette draws status. Colour is not the only channel available:
+	// Signal says "clean" by drawing nothing and "dirty" with an outline rather
+	// than a fill, which is quieter than any hue could be.
+	syncedGlyphHidden bool
+	dirtyOutlined     bool
+
+	// Status semantics — used sparingly so the list still reads calm. Each has a
+	// soft tinted background for the icon chip variants.
 	statusBehind color.Color
+	// statusAhead is deliberately a different hue from statusBehind: incoming
+	// work and outgoing work are different jobs, and the same colour for both
+	// would leave the shape of the arrow doing all the work.
+	statusAhead  color.Color
 	statusDirty  color.Color
 	statusSynced color.Color
 	statusError  color.Color
@@ -179,91 +326,6 @@ type palette struct {
 	toggleOffBg   color.Color // pill switch track, off
 	toggleKnobOff color.Color // pill switch knob, off
 	pullBtnBg     color.Color // hover action chip: pull (accent tint)
+	pushBtnBg     color.Color // branch chip: push (ahead tint, so it is visibly not a pull)
 	openBtnBg     color.Color // hover action chip: open (neutral tint)
-}
-
-// paletteFor returns the custom popover colours for the given appearance variant.
-func paletteFor(v fyne.ThemeVariant) palette {
-	if v == theme.VariantLight {
-		return palette{
-			rowName:    color.NRGBA{R: 25, G: 103, B: 224, A: 255},
-			rowSub:     color.NRGBA{R: 92, G: 100, B: 112, A: 255},
-			rowHover:   color.NRGBA{R: 0, G: 0, B: 0, A: 12},
-			btnHover:   color.NRGBA{R: 0, G: 0, B: 0, A: 26},
-			detailKey:  color.NRGBA{R: 52, G: 58, B: 70, A: 255},
-			gradTop:    color.NRGBA{R: 250, G: 251, B: 253, A: 255},
-			gradBottom: color.NRGBA{R: 232, G: 236, B: 242, A: 255},
-			tipBg:      color.NRGBA{R: 250, G: 251, B: 253, A: 252},
-			tipBorder:  color.NRGBA{R: 0, G: 0, B: 0, A: 40},
-			tipText:    color.NRGBA{R: 28, G: 33, B: 42, A: 255},
-
-			// Light equivalents share the status hues at higher chroma / lower
-			// lightness so they read on a pale surface.
-			statusBehind: color.NRGBA{R: 176, G: 122, B: 26, A: 255},
-			statusDirty:  color.NRGBA{R: 184, G: 90, B: 61, A: 255},
-			statusSynced: color.NRGBA{R: 63, G: 138, B: 92, A: 255},
-			statusError:  color.NRGBA{R: 192, G: 53, B: 58, A: 255},
-			behindTint:   color.NRGBA{R: 176, G: 122, B: 26, A: 34},
-			dirtyTint:    color.NRGBA{R: 184, G: 90, B: 61, A: 30},
-			syncedTint:   color.NRGBA{R: 63, G: 138, B: 92, A: 28},
-
-			muted:         color.NRGBA{R: 92, G: 100, B: 112, A: 255},
-			faint:         color.NRGBA{R: 120, G: 128, B: 140, A: 255},
-			syncedName:    color.NRGBA{R: 90, G: 110, B: 150, A: 255},
-			groupHeaderBg: color.NRGBA{R: 0, G: 0, B: 0, A: 8},
-			rowExpandedBg: color.NRGBA{R: 0, G: 0, B: 0, A: 10},
-			pillBehindBg:  color.NRGBA{R: 176, G: 122, B: 26, A: 34},
-			cardBg:        color.NRGBA{R: 255, G: 255, B: 255, A: 235},
-			cardBorder:    color.NRGBA{R: 0, G: 0, B: 0, A: 20},
-			fieldBg:       color.NRGBA{R: 255, G: 255, B: 255, A: 235},
-			fieldBorder:   color.NRGBA{R: 0, G: 0, B: 0, A: 30},
-			titlebarBg:    color.NRGBA{R: 236, G: 239, B: 244, A: 255},
-			footerBg:      color.NRGBA{R: 240, G: 242, B: 246, A: 255},
-			hairline:      color.NRGBA{R: 0, G: 0, B: 0, A: 15},
-			toggleOffBg:   color.NRGBA{R: 0, G: 0, B: 0, A: 36},
-			toggleKnobOff: color.NRGBA{R: 255, G: 255, B: 255, A: 255},
-			pullBtnBg:     color.NRGBA{R: 25, G: 103, B: 224, A: 36},
-			openBtnBg:     color.NRGBA{R: 0, G: 0, B: 0, A: 15},
-		}
-	}
-	return palette{
-		rowName:    color.NRGBA{R: 91, G: 157, B: 255, A: 255},
-		rowSub:     color.NRGBA{R: 151, G: 161, B: 176, A: 255},
-		rowHover:   color.NRGBA{R: 255, G: 255, B: 255, A: 14},
-		btnHover:   color.NRGBA{R: 255, G: 255, B: 255, A: 38},
-		detailKey:  color.NRGBA{R: 210, G: 216, B: 226, A: 255},
-		gradTop:    color.NRGBA{R: 26, G: 31, B: 41, A: 255},
-		gradBottom: color.NRGBA{R: 10, G: 13, B: 20, A: 255},
-		tipBg:      color.NRGBA{R: 38, G: 42, B: 51, A: 250},
-		tipBorder:  color.NRGBA{R: 255, G: 255, B: 255, A: 40},
-		tipText:    color.NRGBA{R: 230, G: 235, B: 242, A: 255},
-
-		// Dark variant — the design's default glass look (all tokens are the dark
-		// values from the handoff).
-		statusBehind: color.NRGBA{R: 230, G: 169, B: 77, A: 255},  // #e6a94d amber
-		statusDirty:  color.NRGBA{R: 232, G: 130, B: 95, A: 255},  // #e8825f coral
-		statusSynced: color.NRGBA{R: 108, G: 195, B: 138, A: 255}, // #6cc38a green
-		statusError:  color.NRGBA{R: 229, G: 72, B: 77, A: 255},   // #e5484d red
-		behindTint:   color.NRGBA{R: 230, G: 169, B: 77, A: 41},   // rgba(...,.16)
-		dirtyTint:    color.NRGBA{R: 232, G: 130, B: 95, A: 36},   // rgba(...,.14)
-		syncedTint:   color.NRGBA{R: 108, G: 195, B: 138, A: 33},  // rgba(...,.13)
-
-		muted:         color.NRGBA{R: 151, G: 161, B: 176, A: 255}, // #97a1b0
-		faint:         color.NRGBA{R: 103, G: 113, B: 127, A: 255}, // #67717f
-		syncedName:    color.NRGBA{R: 127, G: 151, B: 196, A: 255}, // #7f97c4
-		groupHeaderBg: color.NRGBA{R: 255, G: 255, B: 255, A: 5},   // rgba(255,255,255,.02)
-		rowExpandedBg: color.NRGBA{R: 255, G: 255, B: 255, A: 8},   // rgba(255,255,255,.03)
-		pillBehindBg:  color.NRGBA{R: 230, G: 169, B: 77, A: 41},   // amber @ .16
-		cardBg:        color.NRGBA{R: 27, G: 33, B: 44, A: 255},    // #1b212c
-		cardBorder:    color.NRGBA{R: 255, G: 255, B: 255, A: 18},  // rgba(255,255,255,.07)
-		fieldBg:       color.NRGBA{R: 18, G: 21, B: 27, A: 255},    // #12151b
-		fieldBorder:   color.NRGBA{R: 255, G: 255, B: 255, A: 26},  // rgba(255,255,255,.1)
-		titlebarBg:    color.NRGBA{R: 23, G: 28, B: 37, A: 255},    // #171c25
-		footerBg:      color.NRGBA{R: 14, G: 17, B: 23, A: 255},    // #0e1117
-		hairline:      color.NRGBA{R: 255, G: 255, B: 255, A: 15},  // rgba(255,255,255,.06)
-		toggleOffBg:   color.NRGBA{R: 255, G: 255, B: 255, A: 36},  // rgba(255,255,255,.14)
-		toggleKnobOff: color.NRGBA{R: 195, G: 203, B: 214, A: 255}, // #c3cbd6
-		pullBtnBg:     color.NRGBA{R: 91, G: 157, B: 255, A: 41},   // rgba(91,157,255,.16)
-		openBtnBg:     color.NRGBA{R: 255, G: 255, B: 255, A: 15},  // rgba(255,255,255,.06)
-	}
 }

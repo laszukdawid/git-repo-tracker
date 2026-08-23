@@ -37,9 +37,13 @@ const maxTrayRepos = 12
 // height is dynamic: the window shrinks to fit its rows and grows only up to
 // popoverMaxHeight, after which the list scrolls (see desiredPopoverHeight).
 const (
-	popoverTitle     = "GitRepoTrackerPopover"
-	popoverWidth     = 380
-	popoverMaxHeight = 480
+	popoverTitle = "GitRepoTrackerPopover"
+	// Wider than it was: two-line rows plus the branch list need the room, and
+	// long repository names were being truncated at 380.
+	popoverWidth = 430
+	// Two-line rows are taller than the old adaptive ones, so the cap rises to
+	// keep roughly the same number of repositories visible at once.
+	popoverMaxHeight = 560
 )
 
 type filterMode int
@@ -75,6 +79,7 @@ type App struct {
 	// Appearance: pal holds the popover's custom colours and variant records which
 	// light/dark variant they were built for, so we can tell when the OS flipped.
 	pal     palette
+	family  paletteFamily
 	variant fyne.ThemeVariant
 
 	// Browser widgets and view state — only ever touched on the main thread.
@@ -82,35 +87,89 @@ type App struct {
 	header       *fyne.Container // search row + (collapsible) options panel; measured when sizing
 	optionsPanel *fyne.Container // inline filter/sort toggles, hidden until the ☰ button
 	list         *widget.List
-	moreBtn      *tipButton
+	moreBtn      *headerButton
+	updateAllBtn *headerButton
 	footer       *fyne.Container // "N repos · N behind" / "N roots" summary bar
 	footerLeft   *canvas.Text
 	footerRight  *canvas.Text
 	tips         *tooltipLayer
+	// ideIcons caches editor artwork by editor id. Reading an application's icon
+	// means opening its bundle, which is not something to redo per row per paint.
+	ideIcons map[string]fyne.Resource
+	// The editor chip's resolved appearance, shared by every row. ideGen is
+	// bumped whenever the choice changes so the cache is rebuilt exactly then.
+	ideCached   rowState
+	ideGen      uint64
+	ideCacheGen uint64
 
 	all          []monitor.RepoState // latest full snapshot
 	visible      []popoverItem       // grouped headers + repo rows currently shown
 	query        string
 	filter       filterMode
 	sort         sortMode
-	groupCount   int             // distinct scan-root sections currently shown (footer "N roots")
-	collapsedRow  float32        // memoised height of a collapsed repo row (title on one line)
-	collapsedRow2 float32        // memoised height of a collapsed repo row (branch wrapped below the name)
-	groupRowH     float32        // memoised height of a group-header row
-	collapsedGrp map[string]bool // scan roots the user has folded closed
+	groupCount   int               // distinct scan-root sections currently shown (footer "N roots")
+	collapsedRow float32           // memoised height of a repo row (identical for every repo)
+	expandedKey  expandedHeightKey // what the memoised expanded height was measured from
+	expandedH    float32           // memoised height of the one expanded row
+	groupRowH    float32           // memoised height of a group-header row
+	collapsedGrp map[string]bool   // scan roots the user has folded closed
 
-	popVisible    bool                        // whether the popover is currently shown (for tray toggle)
-	lastResign    time.Time                   // when the popover last auto-hid on focus loss
-	expandedPath  string                      // repo path expanded inline ("" = none)
-	pulling       map[string]bool             // repos with a pull in progress
-	details       map[string]*monitor.Details // cached commit details for expanded repos
-	trayKey       string                      // memoised tray icon state key (skip redundant re-encodes)
-	trayOpen      bool                        // native tray menu is probably open; avoid replacing it under the cursor
-	trayDirty     bool                        // a tray rebuild was requested while the menu was open
-	trayIconDirty bool                        // a tray icon update was requested while the menu was open
-	trayBuilt     bool                        // Linux native menus are snapshot-based to avoid AppIndicator flicker
-	trayTimer     *time.Timer                 // best-effort tray-open timeout; systray has no close event
-	remoteCloser  io.Closer                   // Linux D-Bus single-instance listener; nil on other platforms
+	// Keyboard selection in the popover list: selPath is the repo highlighted by
+	// Up/Down (empty = none) and selIdx its index in visible (-1 = none). The path
+	// is the source of truth so the highlight survives a re-filter; the index is
+	// re-derived in applyFilter.
+	selPath string
+	selIdx  int
+
+	// Background-activity mirror, main thread only. act is the last progress
+	// snapshot pulled from the monitor; tally accumulates completions so a batch
+	// of pulls reports one sentence rather than a stream; transient is that
+	// sentence while it is on screen.
+	act            monitor.Activity
+	tally          pullTally
+	transient      string
+	transientUntil time.Time
+	expiryTimer    *time.Timer // single sweeper for every transient state
+
+	popVisible   bool                        // whether the popover is currently shown (for tray toggle)
+	lastResign   time.Time                   // when the popover last auto-hid on focus loss
+	expandedPath string                      // repo path expanded inline ("" = none)
+	rowStatus    map[string]*rowStatus       // transient per-repo pull state, keyed by path
+	details      map[string]*monitor.Details // cached commit details for expanded repos
+
+	// Branch state, all keyed by repo path and all main-thread only. It is
+	// deliberately here rather than in the monitor: a branch listing is large and
+	// goes stale on any commit, so it is read on demand and never persisted.
+	// branchGen is bumped on every change and is what makes the section state
+	// comparable — see branchSectionState.
+	branches      map[string]*monitor.BranchList
+	branchOpen    map[string]bool
+	branchLoading map[string]bool
+	branchBusy    map[branchKey]bool
+	branchErr     map[branchKey]string
+	branchGen     map[string]uint64
+	// branchLimit is how many of a repository's branches are rendered; it grows
+	// a page at a time when the user asks for more.
+	branchLimit map[string]int
+	// branchFetching marks repositories with an explicit fetch in flight.
+	branchFetching map[string]bool
+	// matchHint records, per repository, the branch that a search matched when
+	// the repository's own name and path did not.
+	matchHint map[string]string
+	// bindex is the branch-name index the search box consults, so a branch can
+	// be found without having opened the repository that holds it.
+	bindex *branchIndex
+	// lastSeenFetch remembers each repository's fetch stamp so the search index
+	// can be invalidated even for repositories whose branches were never opened.
+	lastSeenFetch map[string]time.Time
+
+	trayKey       string      // memoised tray icon state key (skip redundant re-encodes)
+	trayOpen      bool        // native tray menu is probably open; avoid replacing it under the cursor
+	trayDirty     bool        // a tray rebuild was requested while the menu was open
+	trayIconDirty bool        // a tray icon update was requested while the menu was open
+	trayBuilt     bool        // Linux native menus are snapshot-based to avoid AppIndicator flicker
+	trayTimer     *time.Timer // best-effort tray-open timeout; systray has no close event
+	remoteCloser  io.Closer   // Linux D-Bus single-instance listener; nil on other platforms
 
 	// Popover height animation state (main thread only). popoverH is the last
 	// applied height; resizeAnim animates a group collapse/expand smoothly; while
@@ -128,14 +187,151 @@ func NewApp(cfg *config.Config) (*App, error) {
 	if !ok {
 		return nil, fmt.Errorf("system tray is not supported on this platform")
 	}
-	a := &App{
-		fyneApp: fyneApp, desk: desk, cfg: cfg, filter: filterAll, sort: sortBehind,
-		pulling: map[string]bool{}, details: map[string]*monitor.Details{},
-		collapsedGrp: map[string]bool{},
-	}
+	a := &App{fyneApp: fyneApp, desk: desk, cfg: cfg, filter: filterAll, sort: sortBehind}
+	a.initState()
 	a.applyTheme() // resolve the configured appearance before any UI is built
 	a.mgr = backend.New(cfg, a.onChange, a.logf)
+	a.mgr.SetOnActivity(a.onActivity)
+	a.installEditorResolver()
 	return a, nil
+}
+
+// initState allocates every map the UI mutates and sets the fields whose zero
+// value is wrong. It is separate from NewApp so tests that build an App directly
+// get the same footing — a missing map here is a nil-map panic on the first
+// interaction, not a compile error.
+func (a *App) initState() {
+	a.selIdx = -1
+	a.rowStatus = map[string]*rowStatus{}
+	a.details = map[string]*monitor.Details{}
+	a.collapsedGrp = map[string]bool{}
+	a.branches = map[string]*monitor.BranchList{}
+	a.branchOpen = map[string]bool{}
+	a.branchLoading = map[string]bool{}
+	a.branchBusy = map[branchKey]bool{}
+	a.branchErr = map[branchKey]string{}
+	a.branchGen = map[string]uint64{}
+	a.branchLimit = map[string]int{}
+	a.branchFetching = map[string]bool{}
+	a.matchHint = map[string]string{}
+	a.ideIcons = map[string]fyne.Resource{}
+	a.bindex = newBranchIndex()
+	a.lastSeenFetch = map[string]time.Time{}
+	a.ideGen, a.ideCacheGen = 1, 0 // force the first resolve
+}
+
+// onActivity is called (debounced) from a monitor goroutine when background
+// progress changes. It only hops threads; everything else happens on the main
+// thread in applyActivity.
+func (a *App) onActivity() { fyne.Do(a.applyActivity) }
+
+// applyActivity pulls the monitor's current progress and any queued completions,
+// and repaints the status line. Main thread only.
+func (a *App) applyActivity() {
+	// Always drain, even with the popover closed. Otherwise a keep-fresh pull
+	// that happened an hour ago would be announced the moment the popover next
+	// opens, as though it had just occurred.
+	events := a.mgr.DrainActivityEvents()
+	if !a.popVisible {
+		return
+	}
+	a.tally = foldEvents(a.tally, events)
+	a.act = a.mgr.Activity()
+	// A batch is over once nothing is pulling any more; that is when its one
+	// summary sentence is emitted.
+	if a.act.Kind != monitor.ActivityPulling {
+		a.flushTally()
+	}
+	a.updateFooter()
+}
+
+// flushTally turns an accumulated batch into a single transient message.
+func (a *App) flushTally() {
+	msg := tallyMessage(a.tally)
+	a.tally = pullTally{}
+	if msg == "" {
+		return
+	}
+	a.transient = msg
+	a.transientUntil = time.Now().Add(transientHold)
+	a.rearmExpiry()
+}
+
+// setRowStatus records a repository's transient pull state and repaints.
+func (a *App) setRowStatus(path string, st *rowStatus) {
+	if st == nil {
+		delete(a.rowStatus, path)
+	} else {
+		a.rowStatus[path] = st
+	}
+	a.rearmExpiry()
+	a.applyFilter()
+}
+
+// rearmExpiry points the single sweeper timer at the soonest transient state
+// due to lapse. One timer, not one per row: a dozen pulls finishing together
+// would otherwise trigger a dozen separate full refreshes.
+func (a *App) rearmExpiry() {
+	if a.expiryTimer != nil {
+		a.expiryTimer.Stop()
+		a.expiryTimer = nil
+	}
+	d, ok := nextExpiry(time.Now(), a.rowStatus, a.transientUntil)
+	if !ok {
+		return
+	}
+	a.expiryTimer = time.AfterFunc(d, func() { fyne.Do(a.sweepExpired) })
+}
+
+// sweepExpired drops lapsed transient state in one pass. It re-derives
+// everything from the maps rather than from a captured entry, so a timer that
+// fires just as its entry is replaced is harmless.
+func (a *App) sweepExpired() {
+	now := time.Now()
+	changed := false
+	for path, st := range a.rowStatus {
+		if st != nil && !st.expires.IsZero() && !st.expires.After(now) {
+			delete(a.rowStatus, path)
+			changed = true
+		}
+	}
+	if !a.transientUntil.IsZero() && !a.transientUntil.After(now) {
+		a.transient = ""
+		a.transientUntil = time.Time{}
+		changed = true
+	}
+	a.rearmExpiry()
+	if changed {
+		a.applyFilter()
+		a.updateFooter()
+	}
+}
+
+// anyPulling reports whether a pull is currently running. Rows that merely
+// carry a finished message do not count.
+func (a *App) anyPulling() bool {
+	for _, st := range a.rowStatus {
+		if st.pulling() {
+			return true
+		}
+	}
+	return false
+}
+
+// stopTimers halts every timer that could otherwise fire after the app is gone
+// and marshal work onto a stopped Fyne app.
+func (a *App) stopTimers() {
+	if a.expiryTimer != nil {
+		a.expiryTimer.Stop()
+		a.expiryTimer = nil
+	}
+	if a.trayTimer != nil {
+		a.trayTimer.Stop()
+		a.trayTimer = nil
+	}
+	if a.tips != nil {
+		a.tips.stopDelay()
+	}
 }
 
 // applyTheme resolves the configured appearance into a concrete light/dark
@@ -145,8 +341,14 @@ func NewApp(cfg *config.Config) (*App, error) {
 func (a *App) applyTheme() {
 	v, forced := a.resolveVariant()
 	a.variant = v
-	a.pal = paletteFor(v)
-	a.fyneApp.Settings().SetTheme(glassTheme{variant: v, forced: forced})
+	a.family = familyFromConfig(a.cfg.PaletteName())
+	a.pal = paletteFor(a.family, v)
+	a.fyneApp.Settings().SetTheme(glassTheme{family: a.family, variant: v, forced: forced})
+	// Row heights are memoised from a probe rendered under the theme. They do not
+	// vary by variant today, but a theme that ever changed a size would leave the
+	// stale measurement driving the popover's height — so invalidate them here
+	// rather than relying on that staying true.
+	a.collapsedRow, a.groupRowH = 0, 0
 }
 
 // resolveVariant maps the configured theme mode to a concrete variant. "System"
@@ -286,6 +488,7 @@ func (a *App) onChange() {
 // menu-bar icon state.
 func (a *App) refresh() {
 	a.all = a.mgr.Snapshot()
+	a.invalidateBranchesFor(a.all)
 	a.pruneViewState()
 	a.applyFilter()
 	a.rebuildTray()
@@ -304,10 +507,14 @@ func (a *App) pruneViewState() {
 			delete(a.details, path)
 		}
 	}
-	for path := range a.pulling {
+	for path := range a.rowStatus {
 		if !livePaths[path] {
-			delete(a.pulling, path)
+			delete(a.rowStatus, path)
 		}
+	}
+	a.pruneBranchState(livePaths)
+	if a.bindex != nil {
+		a.bindex.prune(livePaths)
 	}
 	if a.expandedPath != "" && !livePaths[a.expandedPath] {
 		a.expandedPath = ""
@@ -373,10 +580,13 @@ func (a *App) openConfigInEditor() {
 	}
 	if err := cmd.Start(); err != nil {
 		a.logf("open config failed: %v", err)
+		return
 	}
+	go func() { _ = cmd.Wait() }() // reap; see actions.Run
 }
 
 func (a *App) quit() {
+	a.stopTimers()
 	a.mgr.Stop()
 	if a.remoteCloser != nil {
 		_ = a.remoteCloser.Close()

@@ -32,6 +32,15 @@ const (
 	ThemeDark   = "dark"
 )
 
+// Colour families. Each has a light and a dark variant, so these three combined
+// with the appearance mode above give the six themes offered in Settings.
+// See internal/ui/palettes.go for what each one is trying to do.
+const (
+	PaletteSlate  = "slate"
+	PaletteInk    = "ink"
+	PaletteSignal = "signal"
+)
+
 // Defaults applied when the config omits a value or carries a nonsensical one.
 const (
 	defaultFetchMinutes = 30
@@ -62,7 +71,13 @@ type Config struct {
 	ClickAction          string   `yaml:"clickAction"`
 	CustomCommand        string   `yaml:"customCommand"`
 	LaunchAtLogin        bool     `yaml:"launchAtLogin"`
-	Theme                string   `yaml:"theme"` // system | light | dark
+	Theme                string   `yaml:"theme"`   // system | light | dark
+	Palette              string   `yaml:"palette"` // slate | ink | signal
+	// IDE is the editor the row's "open in IDE" control launches, stored as a
+	// .app path or "cmd:<name>". ExtraIDEs are editors the user pointed at by
+	// hand, which discovery would not have found on its own.
+	IDE       string   `yaml:"ide,omitempty"`
+	ExtraIDEs []string `yaml:"extraIDEs,omitempty"`
 
 	path string
 	mu   sync.Mutex
@@ -134,6 +149,12 @@ func (c *Config) normalize() {
 		// valid
 	default:
 		c.Theme = ThemeSystem
+	}
+	switch c.Palette {
+	case PaletteSlate, PaletteInk, PaletteSignal:
+		// valid
+	default:
+		c.Palette = PaletteSlate
 	}
 	for i := range c.Roots {
 		if c.Roots[i].Depth < 0 {
@@ -209,6 +230,50 @@ func (c *Config) ThemeMode() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Theme
+}
+
+// IDEChoice returns the configured editor's stored id, and the editors the user
+// added by hand.
+func (c *Config) IDEChoice() (id string, extra []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.IDE, append([]string(nil), c.ExtraIDEs...)
+}
+
+// SetIDE remembers which editor to open repositories with.
+func (c *Config) SetIDE(id string) error {
+	return c.update(func() { c.IDE = strings.TrimSpace(id) })
+}
+
+// AddExtraIDE records an editor the user chose by hand and makes it current.
+func (c *Config) AddExtraIDE(path, id string) error {
+	return c.update(func() {
+		for _, existing := range c.ExtraIDEs {
+			if existing == path {
+				c.IDE = id
+				return
+			}
+		}
+		c.ExtraIDEs = append(c.ExtraIDEs, path)
+		c.IDE = id
+	})
+}
+
+// PaletteName returns the configured colour family.
+func (c *Config) PaletteName() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Palette
+}
+
+// SetPalette updates the colour family and persists it.
+func (c *Config) SetPalette(name string) error {
+	switch name {
+	case PaletteSlate, PaletteInk, PaletteSignal:
+	default:
+		name = PaletteSlate
+	}
+	return c.update(func() { c.Palette = name })
 }
 
 // SetThemeMode updates the appearance mode and persists it.
@@ -298,6 +363,9 @@ type persisted struct {
 	customCommand        string
 	launchAtLogin        bool
 	theme                string
+	palette              string
+	ide                  string
+	extraIDEs            []string
 }
 
 func (c *Config) snapshot() persisted {
@@ -311,6 +379,9 @@ func (c *Config) snapshot() persisted {
 		customCommand:        c.CustomCommand,
 		launchAtLogin:        c.LaunchAtLogin,
 		theme:                c.Theme,
+		palette:              c.Palette,
+		ide:                  c.IDE,
+		extraIDEs:            append([]string(nil), c.ExtraIDEs...),
 	}
 }
 
@@ -320,6 +391,9 @@ func (c *Config) restore(p persisted) {
 	c.ClickAction, c.CustomCommand = p.clickAction, p.customCommand
 	c.LaunchAtLogin = p.launchAtLogin
 	c.Theme = p.theme
+	c.Palette = p.palette
+	c.IDE = p.ide
+	c.ExtraIDEs = p.extraIDEs
 }
 
 // Reload re-reads the backing file and replaces the in-memory values in place,
@@ -340,6 +414,9 @@ func (c *Config) Reload() error {
 	c.CustomCommand = fresh.CustomCommand
 	c.LaunchAtLogin = fresh.LaunchAtLogin
 	c.Theme = fresh.Theme
+	c.Palette = fresh.Palette
+	c.IDE = fresh.IDE
+	c.ExtraIDEs = fresh.ExtraIDEs
 	c.mu.Unlock()
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -23,7 +24,7 @@ const (
 type toggleSwitch struct {
 	widget.BaseWidget
 	on        bool
-	hovered   bool
+	state     interactionState
 	pal       palette
 	onChanged func(bool)
 	tips      *tooltipLayer // optional; set with tip to show a hover tooltip
@@ -53,21 +54,50 @@ func (t *toggleSwitch) MouseIn(*desktop.MouseEvent) {
 func (t *toggleSwitch) MouseMoved(*desktop.MouseEvent) {}
 func (t *toggleSwitch) MouseOut() {
 	t.setHovered(false)
+	t.setPressed(false)
 	if t.tips != nil {
 		t.tips.hide()
 	}
 }
 
 func (t *toggleSwitch) setHovered(h bool) {
-	if t.hovered != h {
-		t.hovered = h
+	if t.state.setHovered(h) {
 		t.Refresh()
+	}
+}
+
+func (t *toggleSwitch) MouseDown(*desktop.MouseEvent) { t.setPressed(true) }
+func (t *toggleSwitch) MouseUp(*desktop.MouseEvent)   { t.setPressed(false) }
+
+func (t *toggleSwitch) setPressed(v bool) {
+	if t.state.setPressed(v) {
+		t.Refresh()
+	}
+}
+
+func (t *toggleSwitch) FocusGained() {
+	if t.state.setFocused(true) {
+		t.Refresh()
+	}
+}
+
+func (t *toggleSwitch) FocusLost() {
+	if t.state.setFocused(false) {
+		t.Refresh()
+	}
+}
+
+func (t *toggleSwitch) TypedRune(rune) {}
+
+func (t *toggleSwitch) TypedKey(ev *fyne.KeyEvent) {
+	if ev.Name == fyne.KeySpace || ev.Name == fyne.KeyReturn || ev.Name == fyne.KeyEnter {
+		keyboardActivate(&t.state, t.Refresh, func() { t.Tapped(nil) })
 	}
 }
 
 func (t *toggleSwitch) CreateRenderer() fyne.WidgetRenderer {
 	track := canvas.NewRectangle(t.pal.toggleOffBg)
-	track.CornerRadius = toggleH / 2
+	track.CornerRadius = canvas.RadiusMaximum
 	knob := canvas.NewCircle(t.pal.toggleKnobOff)
 	r := &toggleRenderer{t: t, track: track, knob: knob, objects: []fyne.CanvasObject{track, knob}}
 	r.Refresh()
@@ -81,23 +111,36 @@ type toggleRenderer struct {
 	objects []fyne.CanvasObject
 }
 
-func (r *toggleRenderer) MinSize() fyne.Size { return fyne.NewSize(toggleW, toggleH) }
+func (r *toggleRenderer) MinSize() fyne.Size { return fyne.NewSize(toggleW, actionBox) }
 
 func (r *toggleRenderer) Layout(size fyne.Size) {
-	r.track.Resize(size)
-	r.track.Move(fyne.NewPos(0, 0))
-	knobSz := size.Height - togglePad*2
+	trackY := (size.Height - toggleH) / 2
+	r.track.Resize(fyne.NewSize(size.Width, toggleH))
+	r.track.Move(fyne.NewPos(0, trackY))
+	knobSz := float32(toggleKnob)
 	x := float32(togglePad)
 	if r.t.on {
 		x = size.Width - togglePad - knobSz
 	}
+	if r.t.state.pressed {
+		r.track.StrokeColor = theme.Color(theme.ColorNamePrimary)
+		r.track.StrokeWidth = 2
+	} else if r.t.state.focused {
+		r.track.StrokeColor = theme.Color(theme.ColorNamePrimary)
+		r.track.StrokeWidth = hairlineW
+	} else if r.t.state.hovered {
+		r.track.StrokeColor = r.t.pal.rowName
+		r.track.StrokeWidth = hairlineW
+	} else {
+		r.track.StrokeWidth = 0
+	}
 	r.knob.Resize(fyne.NewSize(knobSz, knobSz))
-	r.knob.Move(fyne.NewPos(x, togglePad))
+	r.knob.Move(fyne.NewPos(x, trackY+togglePad))
 }
 
 func (r *toggleRenderer) Refresh() {
 	if r.t.on {
-		r.track.FillColor = r.t.pal.rowName // accent fill when on
+		r.track.FillColor = r.t.pal.accent  // accent fill when on
 		r.knob.FillColor = chipSelectedText // white knob
 	} else {
 		r.track.FillColor = r.t.pal.toggleOffBg

@@ -43,12 +43,50 @@ func resolveGit() string {
 // Binary returns the resolved git executable path.
 func Binary() string { return gitPath }
 
+// hardeningArgs are `-c key=value` overrides passed to every git invocation. A
+// command-line -c has the highest configuration precedence, so it wins over the
+// repository's own .git/config — the one config layer an attacker controls when
+// they hand the user a repository. Each entry closes a code-execution path that
+// git would otherwise take on behalf of a background status/fetch/pull:
+//
+//   - core.fsmonitor: a repo-local value is a command git runs on every `git status`.
+//   - core.hooksPath: points hooks at an empty directory so no repo-supplied hook
+//     (post-checkout, post-merge, ... on pull) ever runs from this process.
+//   - protocol.ext.allow=never: ext:: remote URLs are shell commands; keep them
+//     off even if a user's global config enabled them for interactive use.
+//   - fetch.recurseSubmodules=no: do not follow a repo into submodules whose
+//     URLs/config it also controls.
+//
+// Residual risk is documented in docs/SECURITY.md: remote.<name>.uploadpack,
+// core.sshCommand and credential.helper in a repo-local config are still
+// honoured by git and cannot be neutralised without breaking legitimate setups.
+var hardeningArgs = []string{
+	"-c", "core.fsmonitor=false",
+	"-c", "core.hooksPath=" + emptyHooksDir(),
+	"-c", "protocol.ext.allow=never",
+	"-c", "fetch.recurseSubmodules=no",
+	// A repo-local `true` would rewrite the commit-graph on every fetch we make —
+	// including the per-branch fast-forwards, which are one click each.
+	"-c", "fetch.writeCommitGraph=false",
+}
+
+// emptyHooksDir returns the path of an empty directory used as core.hooksPath.
+// It is created once under the OS temp dir; an empty hooks directory is the
+// unambiguous way to disable hooks (git silently finds none to run).
+func emptyHooksDir() string {
+	dir := filepath.Join(os.TempDir(), "git-repo-tracker-no-hooks")
+	_ = os.MkdirAll(dir, 0o700)
+	return dir
+}
+
 // Env returns the current environment with commonBinDirs ensured on PATH and
 // interactive credential prompts disabled. Disabling prompts (GIT_TERMINAL_PROMPT=0)
 // is essential for background fetches: an auth-required remote must fail fast
 // rather than block a worker waiting on a username/password that will never come.
+// GIT_OPTIONAL_LOCKS=0 keeps `git status` from taking the index lock, so the
+// background poll never collides with the user's editor or a running commit.
 func Env() []string {
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	current := os.Getenv("PATH")
 	have := map[string]bool{}
 	for _, d := range filepath.SplitList(current) {

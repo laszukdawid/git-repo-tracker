@@ -143,6 +143,114 @@ func TestSetThemeModeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPaletteDefaultsAndNormalizesInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{name: "omitted", yaml: "roots: []\n"},
+		{name: "invalid", yaml: "palette: ultraviolet\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			c, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.PaletteName(); got != PaletteSlate {
+				t.Errorf("palette = %q, want fallback %q", got, PaletteSlate)
+			}
+		})
+	}
+}
+
+func TestSetPaletteRoundTripAndInvalidFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetPalette(PaletteSignal); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.PaletteName(); got != PaletteSignal {
+		t.Errorf("persisted palette = %q, want %q", got, PaletteSignal)
+	}
+	if err := reloaded.SetPalette("ultraviolet"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.PaletteName(); got != PaletteSlate {
+		t.Errorf("invalid palette = %q, want fallback %q", got, PaletteSlate)
+	}
+	reloaded, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.PaletteName(); got != PaletteSlate {
+		t.Errorf("invalid palette persisted as %q, want fallback %q", got, PaletteSlate)
+	}
+}
+
+func TestSetIDERoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetIDE("  cmd:code  "); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, extra := reloaded.IDEChoice()
+	if id != "cmd:code" || len(extra) != 0 {
+		t.Errorf("IDE choice = %q, %v; want cmd:code and no extras", id, extra)
+	}
+}
+
+func TestAddExtraIDERoundTripDeduplicatesAndReturnsCopy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extraPath := "/Applications/Example.app"
+	if err := c.AddExtraIDE(extraPath, "cmd:first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddExtraIDE(extraPath, "cmd:second"); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, extra := reloaded.IDEChoice()
+	if id != "cmd:second" {
+		t.Errorf("selected IDE = %q, want duplicate's latest id", id)
+	}
+	if len(extra) != 1 || extra[0] != extraPath {
+		t.Fatalf("extra IDEs = %v, want [%q]", extra, extraPath)
+	}
+	extra[0] = "/Applications/Changed.app"
+	_, again := reloaded.IDEChoice()
+	if len(again) != 1 || again[0] != extraPath {
+		t.Errorf("mutating returned extras changed config: %v", again)
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	if got := ExpandPath("~"); got != home {

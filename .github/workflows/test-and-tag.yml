@@ -62,7 +62,7 @@ jobs:
   tag-release:
     needs: test
     runs-on: ubuntu-latest
-    if: success() && github.event_name != 'workflow_dispatch' || github.event_name == 'workflow_dispatch'
+    if: success() # needs: test already gates both push and workflow_dispatch runs
     permissions:
       contents: write
     steps:

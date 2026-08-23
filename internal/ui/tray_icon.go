@@ -31,7 +31,7 @@ func (a *App) trayStateNow() (trayicon.State, int) {
 		return trayicon.Behind, behind
 	case anyDirty:
 		return trayicon.Dirty, 0
-	case len(a.pulling) > 0:
+	case a.anyPulling():
 		return trayicon.Fetching, 0
 	default:
 		return trayicon.Synced, 0

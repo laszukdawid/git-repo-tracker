@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"image/color"
 	"os"
 	"strconv"
@@ -21,13 +22,15 @@ import (
 
 // Settings layout metrics (option 1e).
 const (
-	settingsWidth  = 430
+	// Deliberately the same width as the popover: the two windows are the same
+	// object seen two ways, and matching their width makes that read.
+	settingsWidth  = popoverWidth
 	settingsHeight = 560
-	cardRadius     = 11
-	cardPadX       = 15
-	cardHeadPadY   = 12
-	cardRowPadY    = 11
-	bodyPad        = 18
+	cardRadius     = radiusMd
+	cardPadX       = spaceLg
+	cardHeadPadY   = spaceMd
+	cardRowPadY    = spaceMd
+	bodyPad        = spaceLg
 	depthFieldW    = 34  // depth is a single digit (scan depth never exceeds 9)
 	numFieldW      = 80  // fixed width for the small min/sec number fields
 	controlW       = 220 // fixed width for the Open-with select and Theme switch
@@ -82,7 +85,7 @@ func (a *App) showSettings() {
 	rebuildRoots()
 
 	addAction := newTextAction("Add directory", theme.ContentAddIcon(), theme.ColorNamePrimary,
-		a.pal.rowName, func() {
+		a.pal.accent, func() {
 			roots = append(roots, newScanRoot())
 			rebuildRoots()
 		})
@@ -92,8 +95,10 @@ func (a *App) showSettings() {
 
 	// Sync & behavior.
 	fetchMin := widget.NewEntry()
+	fetchMin.Validator = positiveInt
 	fetchMin.SetText(strconv.Itoa(int(a.cfg.FetchInterval().Minutes())))
 	localSec := widget.NewEntry()
+	localSec.Validator = positiveInt
 	localSec.SetText(strconv.Itoa(int(a.cfg.LocalRefresh().Seconds())))
 
 	action, custom := a.cfg.Click()
@@ -122,13 +127,24 @@ func (a *App) showSettings() {
 	}
 	themeBar := a.segmentedBar([]string{"System", "Light", "Dark"}, themeSel, func(i int) { themeSel = i })
 
-	syncBody := a.inset(container.New(&tightVBox{gap: 13},
+	// Colour family. Three families times the light/dark variant above give the
+	// six themes; the family decides what colour *means* in the list, not just
+	// which hue is used. See internal/ui/palettes.go.
+	palettes := []string{config.PaletteSlate, config.PaletteInk, config.PaletteSignal}
+	paletteSel := indexOf(palettes, a.cfg.PaletteName())
+	if paletteSel < 0 {
+		paletteSel = 0
+	}
+	paletteBar := a.segmentedBar([]string{"Slate", "Ink", "Signal"}, paletteSel, func(i int) { paletteSel = i })
+
+	syncBody := a.inset(container.New(&tightVBox{gap: spaceMd},
 		a.formRow("Fetch every", a.suffixField(fetchMin, "min")),
 		a.formRow("Local refresh", a.suffixField(localSec, "sec")),
 		a.formRow("Open with", a.fixedWidth(actionSelect, controlW)),
 		customRow,
 		a.formRow("Theme", a.fixedWidth(themeBar, controlW)),
-	), cardRowPadY+2, cardPadX, cardRowPadY+2, cardPadX)
+		a.formRow("Colours", a.fixedWidth(paletteBar, controlW)),
+	), cardRowPadY, cardPadX, cardRowPadY, cardPadX)
 	syncCard := a.cardWithBody(
 		a.inset(a.cardTitle("Sync & behavior"), cardHeadPadY, cardPadX, cardHeadPadY, cardPadX),
 		syncBody)
@@ -141,8 +157,8 @@ func (a *App) showSettings() {
 	)
 
 	body := container.NewVScroll(a.inset(
-		container.New(&tightVBox{gap: 16}, dirCard, syncCard, startupRow),
-		bodyPad, bodyPad+2, bodyPad, bodyPad+2))
+		container.New(&tightVBox{gap: spaceLg}, dirCard, syncCard, startupRow),
+		bodyPad, bodyPad, bodyPad, bodyPad))
 
 	// Sticky footer save bar.
 	save := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), func() {
@@ -151,6 +167,17 @@ func (a *App) showSettings() {
 			if strings.TrimSpace(r.Path) != "" {
 				cleaned = append(cleaned, r)
 			}
+		}
+		// Validate before persisting: the entries already show a red marker on bad
+		// input, but Save must not silently keep the old value while the field
+		// displays a new one.
+		if err := firstError(
+			labelled("Fetch every", fetchMin.Validate()),
+			labelled("Local refresh", localSec.Validate()),
+			customCommandError(actionSelect.Selected, customEntry.Text),
+		); err != nil {
+			dialog.ShowError(err, w)
+			return
 		}
 		fm, _ := strconv.Atoi(strings.TrimSpace(fetchMin.Text))
 		ls, _ := strconv.Atoi(strings.TrimSpace(localSec.Text))
@@ -173,6 +200,10 @@ func (a *App) showSettings() {
 			dialog.ShowError(err, w)
 			return
 		}
+		if err := a.cfg.SetPalette(palettes[paletteSel]); err != nil {
+			dialog.ShowError(err, w)
+			return
+		}
 		a.applyTheme()          // install the chosen variant as the Fyne theme
 		a.buildPopoverContent() // repaint the popover's custom colours for it
 		a.mgr.Refresh()
@@ -185,7 +216,7 @@ func (a *App) showSettings() {
 
 	footerBar := container.NewStack(
 		a.rect(a.pal.footerBg, 0),
-		a.inset(container.NewHBox(layout.NewSpacer(), cancel, save), 10, 16, 10, 16),
+		a.inset(container.NewHBox(layout.NewSpacer(), cancel, save), spaceSm, spaceLg, spaceSm, spaceLg),
 	)
 	footer := container.New(&tightVBox{gap: 0}, a.hairline(), footerBar)
 
@@ -195,6 +226,49 @@ func (a *App) showSettings() {
 	// As a menu-bar agent the app isn't auto-activated when Settings is opened from
 	// the status-bar menu, so surface the window explicitly (no-op off macOS).
 	activateApp()
+}
+
+// positiveInt is the Entry validator for the interval fields.
+func positiveInt(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return fmt.Errorf("enter a whole number greater than 0")
+	}
+	return nil
+}
+
+// nonNegativeInt is the Entry validator for the scan-depth field (0 = unlimited).
+func nonNegativeInt(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return fmt.Errorf("enter 0 (unlimited) or a positive whole number")
+	}
+	return nil
+}
+
+// customCommandError rejects saving the "custom" click action with nothing to run.
+func customCommandError(action, custom string) error {
+	if action == config.ActionCustom && strings.TrimSpace(custom) == "" {
+		return fmt.Errorf("Custom command: enter a command, e.g. code {path}")
+	}
+	return nil
+}
+
+// labelled prefixes a validation error with the field it belongs to.
+func labelled(field string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", field, err)
+}
+
+func firstError(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 func newScanRoot() config.Root {
@@ -212,7 +286,7 @@ func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Wind
 	// The folder-browse button sits inside the entry (its ActionItem, like a password
 	// revealer) so path + browse read as one field. It MUST be assigned before the
 	// SetText/SetPlaceHolder calls below, which build the entry's renderer.
-	path.ActionItem = newTipButton(tips, theme.FolderOpenIcon(), "Browse for a folder", func() {
+	path.ActionItem = newHeaderButton(tips, a.pal, theme.FolderOpenIcon(), "Browse for a folder", func() {
 		a.browseForFolder(w, config.ExpandPath(path.Text), func(chosen string) {
 			fyne.Do(func() { path.SetText(tildeAbbrev(chosen)) }) // OnChanged updates roots[i]
 		})
@@ -222,6 +296,7 @@ func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Wind
 	path.OnChanged = func(s string) { roots[i].Path = s }
 
 	depth := widget.NewEntry()
+	depth.Validator = nonNegativeInt
 	depth.SetText(strconv.Itoa(roots[i].Depth))
 	depth.OnChanged = func(s string) {
 		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 0 {
@@ -233,25 +308,49 @@ func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Wind
 
 	fetch := newToggleSwitch(roots[i].AutoFetch, a.pal, func(b bool) { roots[i].AutoFetch = b })
 	fetch.tips, fetch.tip = tips, "Auto-fetch this directory"
-	remove := newTipButton(tips, theme.DeleteIcon(), "Remove this directory", onRemove)
+	remove := newHeaderButton(tips, a.pal, theme.DeleteIcon(), "Remove this directory", onRemove)
 
 	// A little air between the depth field and the toggle; the delete button sits
 	// right next to the toggle (no wide gap).
-	right := container.NewHBox(
-		container.NewCenter(depthField),
-		hspace(12),
-		container.NewCenter(fetch),
-		remove,
-	)
+	right := container.New(&directoryActionsLayout{}, depthField, fetch, remove)
 	row := container.NewBorder(nil, nil, nil, right, path)
 	return a.inset(row, cardRowPadY, cardPadX, cardRowPadY, cardPadX)
 }
 
-// hspace is a fixed-width, invisible spacer for widening gaps within an HBox.
-func hspace(w float32) fyne.CanvasObject {
-	r := canvas.NewRectangle(color.Transparent)
-	r.SetMinSize(fyne.NewSize(w, 0))
-	return r
+type directoryActionsLayout struct{}
+
+func (directoryActionsLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	gaps := []float32{spaceMd, actionSiblingGap}
+	x := float32(0)
+	for i, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		object.Move(fyne.NewPos(x, (size.Height-itemSize.Height)/2))
+		object.Resize(itemSize)
+		x += itemSize.Width
+		if i < len(gaps) {
+			x += gaps[i]
+		}
+	}
+}
+
+func (directoryActionsLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	gaps := []float32{spaceMd, actionSiblingGap}
+	var width, height float32
+	for i, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		width += itemSize.Width
+		height = max(height, itemSize.Height)
+		if i < len(gaps) {
+			width += gaps[i]
+		}
+	}
+	return fyne.NewSize(width, height)
 }
 
 // browseForFolder opens a folder picker starting at startDir and calls onPick with
@@ -270,6 +369,24 @@ func (a *App) browseForFolder(w fyne.Window, startDir string, onPick func(string
 		}
 		onPick(u.Path())
 	}, w)
+}
+
+// browseForApplication opens the OS picker for an application bundle, falling
+// back to Fyne's in-app file dialog where there is no native panel.
+func (a *App) browseForApplication(onPick func(string)) {
+	if chosen, native := chooseApplicationNative(); native {
+		if chosen != "" {
+			onPick(chosen)
+		}
+		return
+	}
+	dialog.ShowFileOpen(func(rc fyne.URIReadCloser, err error) {
+		if err != nil || rc == nil {
+			return
+		}
+		defer rc.Close()
+		onPick(rc.URI().Path())
+	}, a.win)
 }
 
 // tildeAbbrev rewrites an absolute path under the user's home directory back to a
@@ -309,9 +426,9 @@ func (a *App) segmentedBar(labels []string, selected int, onSelect func(int)) fy
 		objs[i] = chips[i]
 	}
 	grid := container.New(layout.NewGridLayout(len(chips)), objs...)
-	track := a.rect(a.pal.fieldBg, 8)
+	track := a.rect(a.pal.fieldBg, radiusSm)
 	track.StrokeColor = a.pal.fieldBorder
-	track.StrokeWidth = 1
+	track.StrokeWidth = hairlineW
 	return container.NewStack(track, container.NewPadded(grid))
 }
 
@@ -335,7 +452,7 @@ func (a *App) fixedWidth(o fyne.CanvasObject, w float32) fyne.CanvasObject {
 // left-aligned so a two-digit value doesn't stretch a field across the whole row.
 func (a *App) suffixField(entry *widget.Entry, suffix string) fyne.CanvasObject {
 	s := canvas.NewText(suffix, a.pal.faint)
-	s.TextSize = 12
+	s.TextSize = textSm
 	field := container.New(layout.NewGridWrapLayout(fyne.NewSize(numFieldW, entry.MinSize().Height)), entry)
 	return container.NewHBox(field, container.NewCenter(s))
 }
@@ -358,7 +475,7 @@ func (a *App) cardTitle(text string) fyne.CanvasObject {
 // mutedLabel is a small muted caption drawn as canvas text (13px).
 func (a *App) mutedLabel(text string) fyne.CanvasObject {
 	t := canvas.NewText(text, a.pal.muted)
-	t.TextSize = 13
+	t.TextSize = textMd
 	return t
 }
 
@@ -421,7 +538,7 @@ type textAction struct {
 	iconName fyne.ThemeColorName
 	col      color.Color
 	onTap    func()
-	hovered  bool
+	state    interactionState
 }
 
 func newTextAction(label string, icon fyne.Resource, iconName fyne.ThemeColorName, col color.Color, onTap func()) *textAction {
@@ -437,56 +554,85 @@ func (t *textAction) Tapped(*fyne.PointEvent) {
 }
 func (t *textAction) MouseIn(*desktop.MouseEvent)    { t.setHovered(true) }
 func (t *textAction) MouseMoved(*desktop.MouseEvent) {}
-func (t *textAction) MouseOut()                      { t.setHovered(false) }
+func (t *textAction) MouseOut() {
+	t.setHovered(false)
+	t.setPressed(false)
+}
+func (t *textAction) MouseDown(*desktop.MouseEvent) { t.setPressed(true) }
+func (t *textAction) MouseUp(*desktop.MouseEvent)   { t.setPressed(false) }
 func (t *textAction) setHovered(h bool) {
-	if t.hovered != h {
-		t.hovered = h
+	if t.state.setHovered(h) {
 		t.Refresh()
 	}
 }
 
+func (t *textAction) setPressed(v bool) {
+	if t.state.setPressed(v) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) FocusGained() {
+	if t.state.setFocused(true) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) FocusLost() {
+	if t.state.setFocused(false) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) TypedRune(rune) {}
+
+func (t *textAction) TypedKey(ev *fyne.KeyEvent) {
+	if ev.Name == fyne.KeySpace || ev.Name == fyne.KeyReturn || ev.Name == fyne.KeyEnter {
+		keyboardActivate(&t.state, t.Refresh, func() { t.Tapped(nil) })
+	}
+}
+
 func (t *textAction) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(color.Transparent)
+	bg.CornerRadius = radiusSm
 	txt := canvas.NewText(t.label, t.col)
-	txt.TextSize = 12.5
+	txt.TextSize = textSm
 	txt.TextStyle = fyne.TextStyle{Bold: true}
-	objs := []fyne.CanvasObject{txt}
+	objs := []fyne.CanvasObject{bg, txt}
 	var img *canvas.Image
 	if t.icon != nil {
 		img = canvas.NewImageFromResource(theme.NewColoredResource(t.icon, t.iconName))
 		img.FillMode = canvas.ImageFillContain
 		objs = append(objs, img)
 	}
-	return &textActionRenderer{t: t, txt: txt, img: img, objects: objs}
+	return &textActionRenderer{t: t, bg: bg, txt: txt, img: img, objects: objs}
 }
 
 type textActionRenderer struct {
 	t       *textAction
+	bg      *canvas.Rectangle
 	txt     *canvas.Text
 	img     *canvas.Image
 	objects []fyne.CanvasObject
 }
 
-const textActionIcon = 14
-
 func (r *textActionRenderer) MinSize() fyne.Size {
 	ts := r.txt.MinSize()
-	w := ts.Width
-	h := ts.Height
+	w := ts.Width + actionLabelPad*2
+	h := float32(actionBox)
 	if r.img != nil {
-		w += textActionIcon + 5
-		if textActionIcon > h {
-			h = textActionIcon
-		}
+		w += actionIcon + actionLabelGap
 	}
-	return fyne.NewSize(w+4, h+4)
+	return fyne.NewSize(w, h)
 }
 
 func (r *textActionRenderer) Layout(size fyne.Size) {
-	x := float32(2)
+	r.bg.Resize(size)
+	x := float32(actionLabelPad)
 	if r.img != nil {
-		r.img.Move(fyne.NewPos(x, (size.Height-textActionIcon)/2))
-		r.img.Resize(fyne.NewSize(textActionIcon, textActionIcon))
-		x += textActionIcon + 5
+		r.img.Move(fyne.NewPos(x, (size.Height-actionIcon)/2))
+		r.img.Resize(fyne.NewSize(actionIcon, actionIcon))
+		x += actionIcon + actionLabelGap
 	}
 	ts := r.txt.MinSize()
 	r.txt.Move(fyne.NewPos(x, (size.Height-ts.Height)/2))
@@ -494,6 +640,24 @@ func (r *textActionRenderer) Layout(size fyne.Size) {
 }
 
 func (r *textActionRenderer) Refresh() {
+	switch {
+	case r.t.state.pressed:
+		r.bg.FillColor = theme.Color(theme.ColorNameSelection)
+		r.bg.StrokeColor = theme.Color(theme.ColorNamePrimary)
+		r.bg.StrokeWidth = 2
+	case r.t.state.active():
+		r.bg.FillColor = theme.Color(theme.ColorNameHover)
+		if r.t.state.focused {
+			r.bg.StrokeColor = theme.Color(theme.ColorNamePrimary)
+			r.bg.StrokeWidth = hairlineW
+		} else {
+			r.bg.StrokeWidth = 0
+		}
+	default:
+		r.bg.FillColor = color.Transparent
+		r.bg.StrokeWidth = 0
+	}
+	r.bg.Refresh()
 	r.txt.Color = r.t.col
 	r.txt.Refresh()
 	if r.img != nil {

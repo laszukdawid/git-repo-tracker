@@ -9,8 +9,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -36,7 +39,17 @@ type Status struct {
 	Modified  int // worktree-modified entries
 	Deleted   int // worktree-deleted entries
 	Untracked int // untracked entries
+	Conflicts int // unmerged entries — a merge or rebase left them to resolve
+
+	// Operation is the multi-step git operation this repository is in the middle
+	// of, if any: "merge", "rebase", "cherry-pick", "revert" or "bisect".
+	Operation string
 }
+
+// Unsettled reports whether the repository is mid-operation or holding
+// conflicts — a state that has to be finished or aborted before anything else,
+// and one no amount of pulling will help.
+func (s Status) Unsettled() bool { return s.Operation != "" || s.Conflicts > 0 }
 
 // Dirty reports whether the working tree or index has any local changes.
 func (s Status) Dirty() bool {
@@ -49,7 +62,68 @@ func GetStatus(ctx context.Context, repoPath string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return parseStatus(out), nil
+	st := parseStatus(out)
+	st.Operation = InProgress(repoPath)
+	return st, nil
+}
+
+// InProgress names the multi-step operation the repository is in the middle of,
+// or "" when it is not in one.
+//
+// It reads the marker files directly rather than running git: porcelain=v2 does
+// not report the operation at all, and the alternative — parsing the prose of
+// `git status --long` — would break on a translated or reworded git. The files
+// have been stable for the whole of git's modern history, and this runs for
+// every repository on every refresh, so not spending a process on it matters.
+func InProgress(repoPath string) string {
+	dir := gitDir(repoPath)
+	if dir == "" {
+		return ""
+	}
+	// Order matters: a rebase that stops on a conflict also writes MERGE_MSG, and
+	// an interactive rebase is the more specific truth.
+	for _, c := range []struct{ marker, name string }{
+		{"rebase-merge", "rebase"},
+		{"rebase-apply", "rebase"},
+		{"MERGE_HEAD", "merge"},
+		{"CHERRY_PICK_HEAD", "cherry-pick"},
+		{"REVERT_HEAD", "revert"},
+		{"BISECT_LOG", "bisect"},
+	} {
+		if _, err := os.Stat(filepath.Join(dir, c.marker)); err == nil {
+			return c.name
+		}
+	}
+	return ""
+}
+
+// gitDir resolves a repository's git directory without running git. In a linked
+// worktree .git is a file holding "gitdir: <path>", and that path is where the
+// operation markers for THAT worktree live — the shared directory's markers
+// belong to a different checkout entirely.
+func gitDir(repoPath string) string {
+	p := filepath.Join(repoPath, ".git")
+	fi, err := os.Stat(p)
+	if err != nil {
+		return ""
+	}
+	if fi.IsDir() {
+		return p
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(data))
+	rest, ok := strings.CutPrefix(line, "gitdir:")
+	if !ok {
+		return ""
+	}
+	rest = strings.TrimSpace(rest)
+	if !filepath.IsAbs(rest) {
+		rest = filepath.Join(repoPath, rest)
+	}
+	return rest
 }
 
 // DefaultBranch returns the remote-tracking ref the origin's HEAD points at
@@ -67,7 +141,9 @@ func DefaultBranch(ctx context.Context, repoPath string) (string, error) {
 // between HEAD and ref, using a three-dot diff (merge-base(HEAD,ref)..ref) so it
 // measures exactly what you would pull in — the lines you are behind by.
 func DiffStat(ctx context.Context, repoPath, ref string) (added, deleted int, err error) {
-	out, err := run(ctx, readTimeout, repoPath, "diff", "--shortstat", "HEAD..."+ref)
+	// --no-ext-diff / --no-textconv: never run a repo-configured diff.external or
+	// diff.<driver>.textconv helper from a background process.
+	out, err := run(ctx, readTimeout, repoPath, "diff", "--shortstat", "--no-ext-diff", "--no-textconv", "HEAD..."+ref)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -89,8 +165,11 @@ func CountBehind(ctx context.Context, repoPath, ref string) (int, error) {
 
 // Fetch updates the repository's remote-tracking refs. It never touches the
 // working tree or local branches, so it is safe to run in the background.
+// --no-write-fetch-head matters for politeness rather than safety: without it
+// every background fetch overwrites the user's own .git/FETCH_HEAD, so their
+// `git fetch && git merge FETCH_HEAD` would silently merge our ref instead.
 func Fetch(ctx context.Context, repoPath string) error {
-	_, err := run(ctx, fetchTimeout, repoPath, "fetch", "--quiet")
+	_, err := run(ctx, fetchTimeout, repoPath, "fetch", "--quiet", "--no-write-fetch-head")
 	return err
 }
 
@@ -127,23 +206,85 @@ func LastCommit(ctx context.Context, repoPath, ref string) (CommitInfo, error) {
 
 // run executes git -C <repoPath> <args...> with a timeout, returning stdout and
 // surfacing stderr in the error so auth/permission problems are visible.
+//
+// Every invocation carries hardeningArgs: this app runs git unattended inside
+// every repository it discovers, including ones the user merely cloned or
+// downloaded, and git treats a repository's own .git/config as trusted. Without
+// these overrides a crafted repo could run arbitrary commands the moment it is
+// scanned (e.g. core.fsmonitor fires on `git status`, hooks fire on fetch/pull).
 func run(ctx context.Context, timeout time.Duration, repoPath string, args ...string) ([]byte, error) {
 	c, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	full := append([]string{"-C", repoPath}, args...)
+	full := make([]string, 0, 2+len(hardeningArgs)+len(args))
+	full = append(full, "-C", repoPath)
+	full = append(full, hardeningArgs...)
+	full = append(full, args...)
 	cmd := exec.CommandContext(c, Binary(), full...)
 	cmd.Env = Env()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
+		code := -1
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
 		}
-		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), lastLine(msg))
+		return nil, &cmdError{Args: args, ExitCode: code, Stderr: stderr.String(), err: err}
 	}
 	return stdout.Bytes(), nil
+}
+
+// cmdError is a failed git invocation, preserved in full.
+//
+// run() used to collapse a failure straight into a string, discarding the exit
+// code and every stderr line but the last. That is enough for a status poll,
+// where the last line is the whole story, but it makes classification
+// impossible: a refused fast-forward says "(non-fast-forward)" and then
+// continues into a hint block, and a merge blocked by local changes ends with
+// the bare word "Aborting".
+//
+// Error() reproduces the old string exactly, so existing callers — and the error
+// text persisted in the state cache — are unchanged.
+type cmdError struct {
+	Args     []string
+	ExitCode int // -1 when the process never ran or was killed
+	Stderr   string
+	err      error
+}
+
+func (e *cmdError) Error() string {
+	msg := strings.TrimSpace(e.Stderr)
+	if msg == "" && e.err != nil {
+		msg = e.err.Error()
+	}
+	return fmt.Sprintf("git %s: %s", strings.Join(e.Args, " "), lastLine(msg))
+}
+
+func (e *cmdError) Unwrap() error { return e.err }
+
+// firstErrorLine returns the first line of stderr that states a reason, skipping
+// git's hint/warning/remote chatter and stripping the "fatal: "/"error: " prefix.
+//
+// It is the counterpart to lastLine: git leads with the reason and pads
+// afterwards, so the last line is right for a one-line auth failure and wrong
+// for a merge or fetch refusal.
+func firstErrorLine(stderr string) string {
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "hint:"), strings.HasPrefix(line, "warning:"),
+			strings.HasPrefix(line, "remote:"), strings.HasPrefix(line, "Warning:"):
+			continue
+		}
+		line = strings.TrimPrefix(line, "fatal: ")
+		line = strings.TrimPrefix(line, "error: ")
+		return line
+	}
+	return ""
 }
 
 // parseStatus interprets porcelain v2 output. See `git help status` (Porcelain
@@ -168,7 +309,10 @@ func parseStatus(out []byte) Status {
 				countXY(f[1][0], f[1][1], &s)
 			}
 		case 'u':
-			s.Modified++ // unmerged entry — needs attention, count as modified
+			// Unmerged: counted as modified so the repo still reads as dirty, and
+			// separately as a conflict so the row can say which it is.
+			s.Modified++
+			s.Conflicts++
 		case '?':
 			s.Untracked++
 		}
