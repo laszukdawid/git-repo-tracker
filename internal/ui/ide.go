@@ -26,6 +26,11 @@ type ideChoice struct {
 	missing bool    // it was chosen but is no longer installed
 }
 
+type ideOpenTarget struct {
+	path  string
+	label string
+}
+
 // installEditorResolver points the legacy "editor" click action at the chosen
 // editor, so a configuration that still says `clickAction: editor` opens what
 // the user picked instead of assuming VS Code's CLI exists.
@@ -82,26 +87,50 @@ func (a *App) ideIcon(c ideChoice) fyne.Resource {
 // openInIDE launches the remembered editor on a repository, or opens the picker
 // when there is nothing to launch.
 func (a *App) openInIDE(r monitor.RepoState) {
+	a.openIDETarget(ideOpenTarget{path: r.Path, label: r.Name})
+}
+
+func (a *App) openIDETarget(target ideOpenTarget) {
 	c := a.currentIDE()
 	if !c.set || c.missing {
-		a.pickIDE(r)
+		a.pickIDETarget(target)
 		return
 	}
-	args, err := c.editor.Args(r.Path)
+	args, err := c.editor.Args(target.path)
 	if err != nil {
 		a.logf("open in %s: %v", c.editor.Name, err)
 		return
 	}
 	if err := actions.RunArgs(args); err != nil {
-		a.logf("open %s in %s: %v", r.Name, c.editor.Name, err)
-		dialog.ShowError(fmt.Errorf("could not open %s in %s: %w", r.Name, c.editor.Name, err), a.win)
+		a.logf("open %s in %s: %v", target.label, c.editor.Name, err)
+		dialog.ShowError(fmt.Errorf("could not open %s in %s: %w", target.label, c.editor.Name, err), a.win)
 	}
+}
+
+// openRepoConfigInIDE resolves the config off the main thread because the
+// lookup is a Git subprocess. The chosen editor can open the resulting file path
+// just as it opens a repository directory.
+func (a *App) openRepoConfigInIDE(r monitor.RepoState) {
+	go func() {
+		path, err := a.mgr.ConfigPath(r.Path)
+		fyne.Do(func() {
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("could not locate %s Git config: %w", r.Name, err), a.win)
+				return
+			}
+			a.openIDETarget(ideOpenTarget{path: path, label: r.Name + " Git config"})
+		})
+	}()
 }
 
 // pickIDE shows the list of editors found on this machine. Discovery runs here
 // rather than being cached for the session, so an editor installed a minute ago
 // appears without restarting the app — and one deleted a minute ago disappears.
 func (a *App) pickIDE(r monitor.RepoState) {
+	a.pickIDETarget(ideOpenTarget{path: r.Path, label: r.Name})
+}
+
+func (a *App) pickIDETarget(target ideOpenTarget) {
 	a.ideGen++ // opening the picker re-checks what is installed
 	_, extra := a.cfg.IDEChoice()
 	found := ide.Discover(extra)
@@ -119,7 +148,7 @@ func (a *App) pickIDE(r monitor.RepoState) {
 
 	for _, editor := range found {
 		editor := editor
-		item := fyne.NewMenuItem(editor.Name, func() { a.chooseIDE(editor, r) })
+		item := fyne.NewMenuItem(editor.Name, func() { a.chooseIDE(editor, target) })
 		if current.set && !current.missing && current.editor.ID() == editor.ID() {
 			item.Checked = true
 		}
@@ -133,7 +162,7 @@ func (a *App) pickIDE(r monitor.RepoState) {
 
 	items = append(items,
 		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("Browse…", func() { a.browseForIDE(r) }),
+		fyne.NewMenuItem("Browse…", func() { a.browseForIDE(target) }),
 	)
 
 	menu := fyne.NewMenu("", items...)
@@ -150,20 +179,20 @@ func (a *App) idePopupPos() fyne.Position {
 
 // chooseIDE remembers an editor and immediately opens the repository the user
 // was pointing at, so choosing is not a separate step from acting.
-func (a *App) chooseIDE(editor ide.IDE, r monitor.RepoState) {
+func (a *App) chooseIDE(editor ide.IDE, target ideOpenTarget) {
 	if err := a.cfg.SetIDE(editor.ID()); err != nil {
 		dialog.ShowError(err, a.win)
 		return
 	}
 	a.ideGen++ // the chip's icon and tooltip change
 	a.applyFilter()
-	if r.Path != "" {
-		a.openInIDE(r)
+	if target.path != "" {
+		a.openIDETarget(target)
 	}
 }
 
 // browseForIDE lets the user point at an editor discovery did not find.
-func (a *App) browseForIDE(r monitor.RepoState) {
+func (a *App) browseForIDE(target ideOpenTarget) {
 	a.browseForApplication(func(path string) {
 		editor, ok := ide.FromPath(path)
 		if !ok {
@@ -176,8 +205,8 @@ func (a *App) browseForIDE(r monitor.RepoState) {
 		}
 		a.ideGen++
 		a.applyFilter()
-		if r.Path != "" {
-			a.openInIDE(r)
+		if target.path != "" {
+			a.openIDETarget(target)
 		}
 	})
 }

@@ -433,6 +433,7 @@ func (a *App) rowStateFor(path string, visIdx int) rowState {
 		match:    a.matchHint[path],
 	}
 	if st.expanded {
+		st.worktrees = a.worktreeSectionFor(path)
 		st.branches = a.branchSectionFor(path)
 	}
 	// Every row shows the same editor, so it is resolved once per paint rather
@@ -455,8 +456,13 @@ func (a *App) rowActions() rowActions {
 		onFresh:  a.toggleKeepFresh,
 		onOpen:   a.activate,
 
-		onOpenIDE: a.openInIDE,
-		onPickIDE: a.pickIDE,
+		onOpenIDE:            a.openInIDE,
+		onPickIDE:            a.pickIDE,
+		onOpenConfig:         a.openRepoConfigInIDE,
+		onToggleWorktrees:    a.toggleWorktrees,
+		onRefreshWorktrees:   a.refreshWorktrees,
+		onOpenWorktreeIDE:    a.openWorktreeIDE,
+		onOpenWorktreeFolder: a.openWorktreeFolder,
 
 		onToggleBranches: a.toggleBranches,
 		onPullBranch:     a.startBranchSync,
@@ -954,10 +960,14 @@ func (a *App) expandedRowHeight(r monitor.RepoState) float32 {
 	st := a.rowStateFor(r.Path, -1)
 	st.expanded = true
 	key := expandedHeightKey{
-		path: r.Path, detail: st.detail, branchGen: a.branchGen[r.Path], status: st.status,
+		path: r.Path, detail: st.detail, branchGen: a.branchGen[r.Path],
+		worktreeGen: a.worktreeGen[r.Path], status: st.status,
 	}
 	if bl := a.branches[r.Path]; bl != nil {
-		key.loadedAt = bl.LoadedAt
+		key.branchLoadedAt = bl.LoadedAt
+	}
+	if wl := a.worktrees[r.Path]; wl != nil {
+		key.worktreeLoadedAt = wl.LoadedAt
 	}
 	if a.expandedH > 0 && a.expandedKey == key {
 		return a.expandedH
@@ -1047,9 +1057,12 @@ func (a *App) buildOptionsPanel() *fyne.Container {
 	// These are segChips, not widget.Buttons. A stock button carries the theme's
 	// full text size and padding, which made this row tower over the filter chips
 	// directly above it — the same panel in two different scales.
-	actions := container.New(&actionClusterLayout{},
+	repoActions := container.New(&actionClusterLayout{},
 		newActionChip(a.pal, "Refresh", theme.ViewRefreshIcon(), func() { a.mgr.Refresh() }),
+		newActionChip(a.pal, "Git Console", theme.ComputerIcon(), a.showGitConsole),
 		newActionChip(a.pal, "Open Config", theme.DocumentIcon(), a.openConfigInEditor),
+	)
+	appActions := container.New(&actionClusterLayout{},
 		newActionChip(a.pal, "Reload", theme.HistoryIcon(), a.reloadConfig),
 		newActionChip(a.pal, "Quit", theme.LogoutIcon(), a.quit),
 	)
@@ -1057,9 +1070,85 @@ func (a *App) buildOptionsPanel() *fyne.Container {
 	return container.NewVBox(
 		container.NewHBox(a.optLabel("Show"), filter),
 		container.NewHBox(a.optLabel("Sort"), sortG),
-		container.NewHBox(a.optLabel("Actions"), actions),
+		container.NewHBox(a.optLabel("Actions"), repoActions),
+		container.NewHBox(a.optLabel("App"), appActions),
 		widget.NewSeparator(), // thin rule between the filtering header and the repos
 	)
+}
+
+// showGitConsole opens the process-local Git command trace. The monitor owns the
+// bounded buffer; this window only formats and filters its current snapshot.
+func (a *App) showGitConsole() {
+	if a.gitConsoleWin != nil {
+		a.refreshGitConsole()
+		a.gitConsoleWin.Show()
+		a.gitConsoleWin.RequestFocus()
+		return
+	}
+
+	w := a.fyneApp.NewWindow("git-repo-tracker — Git Console")
+	a.gitConsoleWin = w
+	a.gitConsoleAuto = true
+
+	search := widget.NewEntry()
+	search.SetPlaceHolder("Filter repository, command, or error…")
+	search.OnChanged = func(query string) {
+		a.gitConsoleQuery = query
+		a.refreshGitConsole()
+	}
+
+	a.gitConsoleText = widget.NewTextGrid()
+	a.gitConsoleText.ShowLineNumbers = false
+	a.gitConsoleCount = widget.NewLabel("")
+
+	copyAll := widget.NewButtonWithIcon("Copy all", theme.ContentCopyIcon(), func() {
+		if a.gitConsoleText == nil {
+			return
+		}
+		w.Clipboard().SetContent(formatGitCommands(filterGitCommands(a.mgr.GitCommands(), a.gitConsoleQuery)))
+	})
+	clearAll := widget.NewButtonWithIcon("Clear", theme.DeleteIcon(), func() {
+		a.mgr.ClearGitCommands()
+		a.refreshGitConsole()
+	})
+	autoScroll := widget.NewCheck("Auto-scroll", func(enabled bool) {
+		a.gitConsoleAuto = enabled
+		if enabled && a.gitConsoleText != nil {
+			a.gitConsoleText.ScrollToBottom()
+		}
+	})
+	autoScroll.SetChecked(true)
+
+	toolbar := container.NewBorder(nil, nil,
+		container.NewHBox(copyAll, clearAll, autoScroll), a.gitConsoleCount, search)
+	w.SetContent(container.NewBorder(toolbar, nil, nil, nil, a.gitConsoleText))
+	w.Resize(fyne.NewSize(780, 520))
+	w.SetOnClosed(func() {
+		a.gitConsoleWin = nil
+		a.gitConsoleText = nil
+		a.gitConsoleCount = nil
+		a.gitConsoleQuery = ""
+	})
+	a.refreshGitConsole()
+	w.Show()
+	w.RequestFocus()
+}
+
+// refreshGitConsole runs only on Fyne's main thread. A fresh immutable snapshot
+// makes filtering independent from concurrent Git activity.
+func (a *App) refreshGitConsole() {
+	if a.gitConsoleText == nil {
+		return
+	}
+	commands := a.mgr.GitCommands()
+	filtered := filterGitCommands(commands, a.gitConsoleQuery)
+	a.gitConsoleText.SetText(formatGitCommands(filtered))
+	if a.gitConsoleCount != nil {
+		a.gitConsoleCount.SetText(fmt.Sprintf("%d shown · %d total", len(filtered), len(commands)))
+	}
+	if a.gitConsoleAuto {
+		a.gitConsoleText.ScrollToBottom()
+	}
 }
 
 // optLabel is a small bold caption ("Show"/"Sort"), vertically centred so it lines

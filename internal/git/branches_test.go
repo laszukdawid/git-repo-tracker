@@ -62,6 +62,32 @@ func TestParseLocalBranches(t *testing.T) {
 	}
 }
 
+func TestParseWorktreesPorcelain(t *testing.T) {
+	out := []byte(strings.Join([]string{
+		"worktree /work/main", "HEAD aaa111", "branch refs/heads/main", "",
+		"worktree /work/feature with spaces", "HEAD bbb222", "branch refs/heads/feature/x", "locked IDE session", "",
+		"worktree /work/detached", "HEAD ccc333", "detached", "",
+		"worktree /work/stale", "HEAD ddd444", "branch refs/heads/old", "prunable gitdir file points to non-existent location", "",
+	}, "\x00"))
+
+	worktrees := parseWorktrees(out)
+	if len(worktrees) != 4 {
+		t.Fatalf("parsed %d worktrees, want 4", len(worktrees))
+	}
+	if got := worktrees[0]; got.Path != "/work/main" || got.Branch != "main" || got.Head != "aaa111" {
+		t.Errorf("main worktree = %+v", got)
+	}
+	if got := worktrees[1]; got.Path != "/work/feature with spaces" || got.Branch != "feature/x" || got.Locked != "IDE session" {
+		t.Errorf("locked worktree = %+v", got)
+	}
+	if got := worktrees[2]; !got.Detached || got.Branch != "" || got.Head != "ccc333" {
+		t.Errorf("detached worktree = %+v", got)
+	}
+	if got := worktrees[3]; got.Prunable != "gitdir file points to non-existent location" {
+		t.Errorf("prunable worktree = %+v", got)
+	}
+}
+
 func TestParseTrack(t *testing.T) {
 	cases := []struct {
 		in            string

@@ -55,6 +55,53 @@ type BranchList struct {
 	PulledAt  time.Time `json:"-"`
 }
 
+// WorktreeInfo is one linked checkout as the UI sees it. The primary checkout
+// is deliberately excluded: its status is already represented by RepoState.
+type WorktreeInfo struct {
+	Path      string `json:"path"`
+	Head      string `json:"head,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	Detached  bool   `json:"detached,omitempty"`
+	Bare      bool   `json:"bare,omitempty"`
+	Locked    string `json:"locked,omitempty"`
+	Prunable  string `json:"prunable,omitempty"`
+	Upstream  string `json:"upstream,omitempty"`
+	Ahead     int    `json:"ahead"`
+	Behind    int    `json:"behind"`
+	Staged    int    `json:"staged"`
+	Modified  int    `json:"modified"`
+	Deleted   int    `json:"deleted"`
+	Untracked int    `json:"untracked"`
+	Conflicts int    `json:"conflicts"`
+	Operation string `json:"operation,omitempty"`
+	Dirty     bool   `json:"dirty"`
+	Err       string `json:"err,omitempty"`
+}
+
+// WorktreeList is loaded on demand and never persisted. Linked checkouts can
+// be numerous and git status can be expensive, so repository discovery remains
+// canonical and this detail is only gathered for an expanded repository.
+type WorktreeList struct {
+	Path      string         `json:"path"`
+	Worktrees []WorktreeInfo `json:"worktrees"`
+	LoadedAt  time.Time      `json:"loadedAt"`
+	Err       string         `json:"err,omitempty"`
+}
+
+// GitCommand is one completed Git subprocess recorded by the shared execution
+// layer. The alias keeps UI/backend consumers on the monitor boundary.
+type GitCommand = git.CommandTrace
+
+func (m *Manager) GitCommands() []GitCommand { return git.CommandTraces() }
+
+func (m *Manager) ClearGitCommands() { git.ClearCommandTraces() }
+
+func (m *Manager) SetOnGitCommand(fn func()) { git.SetCommandTraceNotify(fn) }
+
+func (m *Manager) ConfigPath(path string) (string, error) {
+	return git.ConfigPath(m.ctx, path)
+}
+
 // Branches reads a repository's branches. It blocks on git, so callers should
 // run it off the UI thread. Nothing is cached here — the Manager stays stateless
 // for branches, exactly like Details(), so there is only one place (the UI) that
@@ -89,6 +136,93 @@ func (m *Manager) Branches(path string) BranchList {
 		})
 	}
 	return bl
+}
+
+// Worktrees reads the linked checkouts belonging to a repository and gathers
+// each checkout's local status. It blocks on git, so callers must run it off the
+// UI thread. The per-repository lock prevents these reads from racing a fetch,
+// pull, push, or worktree creation for the same repository.
+func (m *Manager) Worktrees(path string) WorktreeList {
+	wl := WorktreeList{Path: path, LoadedAt: time.Now()}
+	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	worktrees, err := git.Worktrees(m.ctx, path)
+	if err != nil {
+		wl.Err = err.Error()
+		return wl
+	}
+
+	primary := cleanAbsolutePath(path)
+	for _, worktree := range worktrees {
+		if cleanAbsolutePath(worktree.Path) == primary {
+			continue
+		}
+		wl.Worktrees = append(wl.Worktrees, WorktreeInfo{
+			Path:     worktree.Path,
+			Head:     shortHash(worktree.Head),
+			Branch:   worktree.Branch,
+			Detached: worktree.Detached,
+			Bare:     worktree.Bare,
+			Locked:   worktree.Locked,
+			Prunable: worktree.Prunable,
+		})
+	}
+	if len(wl.Worktrees) == 0 {
+		return wl
+	}
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := min(refreshWorkers, len(wl.Worktrees))
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				item := &wl.Worktrees[i]
+				if item.Bare || item.Prunable != "" {
+					continue
+				}
+				status, statusErr := git.GetStatus(m.ctx, item.Path)
+				if statusErr != nil {
+					item.Err = statusErr.Error()
+					continue
+				}
+				item.Branch = status.Branch
+				item.Detached = status.Detached
+				item.Upstream = status.Upstream
+				item.Ahead = status.Ahead
+				item.Behind = status.Behind
+				item.Staged = status.Staged
+				item.Modified = status.Modified
+				item.Deleted = status.Deleted
+				item.Untracked = status.Untracked
+				item.Conflicts = status.Conflicts
+				item.Operation = status.Operation
+				item.Dirty = status.Dirty()
+			}
+		}()
+	}
+	for i := range wl.Worktrees {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	return wl
+}
+
+func cleanAbsolutePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = resolved
+	}
+	return filepath.Clean(abs)
 }
 
 // ErrBranchUpToDate reports that a branch had nothing to do. It is not a

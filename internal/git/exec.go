@@ -4,8 +4,122 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
+
+const commandTraceLimit = 500
+
+// CommandTrace is one completed Git subprocess. It contains the exact argv that
+// was executed after credentials are redacted, but never stdout or environment
+// values. Traces live in memory only and are discarded when the app exits.
+type CommandTrace struct {
+	ID         uint64
+	StartedAt  time.Time
+	Duration   time.Duration
+	RepoPath   string
+	Executable string
+	Args       []string
+	ExitCode   int
+	Stderr     string
+}
+
+var commandTraceStore struct {
+	sync.Mutex
+	nextID uint64
+	items  []CommandTrace
+	notify func()
+}
+
+// SetCommandTraceNotify installs the lightweight callback fired after a trace
+// is recorded. The callback must marshal UI work onto its own main thread.
+func SetCommandTraceNotify(fn func()) {
+	commandTraceStore.Lock()
+	commandTraceStore.notify = fn
+	commandTraceStore.Unlock()
+}
+
+// CommandTraces returns an immutable snapshot ordered oldest to newest.
+func CommandTraces() []CommandTrace {
+	commandTraceStore.Lock()
+	defer commandTraceStore.Unlock()
+	out := make([]CommandTrace, len(commandTraceStore.items))
+	for i, item := range commandTraceStore.items {
+		out[i] = item
+		out[i].Args = append([]string(nil), item.Args...)
+	}
+	return out
+}
+
+// ClearCommandTraces drops the current session's history.
+func ClearCommandTraces() {
+	commandTraceStore.Lock()
+	commandTraceStore.items = nil
+	commandTraceStore.nextID = 0
+	commandTraceStore.Unlock()
+}
+
+func recordCommandTrace(trace CommandTrace) {
+	trace.Executable = redactTraceText(trace.Executable)
+	trace.RepoPath = redactTraceText(trace.RepoPath)
+	trace.Stderr = redactTraceText(trace.Stderr)
+	trace.Args = append([]string(nil), trace.Args...)
+	for i := range trace.Args {
+		trace.Args[i] = redactTraceText(trace.Args[i])
+	}
+
+	commandTraceStore.Lock()
+	commandTraceStore.nextID++
+	trace.ID = commandTraceStore.nextID
+	commandTraceStore.items = append(commandTraceStore.items, trace)
+	if extra := len(commandTraceStore.items) - commandTraceLimit; extra > 0 {
+		copy(commandTraceStore.items, commandTraceStore.items[extra:])
+		commandTraceStore.items = commandTraceStore.items[:commandTraceLimit]
+	}
+	notify := commandTraceStore.notify
+	commandTraceStore.Unlock()
+	if notify != nil {
+		notify()
+	}
+}
+
+// CommandLine formats the invocation for display or copying. Arguments are
+// shell-quoted for readability only; execution never goes through a shell.
+func (t CommandTrace) CommandLine() string {
+	parts := make([]string, 0, len(t.Args)+1)
+	parts = append(parts, shellQuote(t.Executable))
+	for _, arg := range t.Args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+var (
+	traceURLCredentials = regexp.MustCompile(`(?i)\b(https?://)[^/\s'\"]+@`)
+	traceQuerySecret    = regexp.MustCompile(`(?i)([?&](?:access_token|token|password|passwd|secret)=)[^&\s'\"]+`)
+	traceBearerSecret   = regexp.MustCompile(`(?i)(Authorization:\s*Bearer\s+)[^\s'\"]+`)
+)
+
+func redactTraceText(value string) string {
+	value = traceURLCredentials.ReplaceAllString(value, `${1}***@`)
+	value = traceQuerySecret.ReplaceAllString(value, `${1}***`)
+	return traceBearerSecret.ReplaceAllString(value, `${1}***`)
+}
 
 // commonBinDirs are PATH entries that a login/Finder-launched macOS GUI process
 // typically does NOT inherit (launchd gives a minimal PATH). git lives in one of

@@ -141,6 +141,67 @@ func TestBranchSectionTextCountsOnlyWhenLoaded(t *testing.T) {
 	}
 }
 
+func TestWorktreeSectionTextAndRowStatus(t *testing.T) {
+	if got := worktreeSectionText(worktreeSectionState{}); got != "Worktrees" {
+		t.Errorf("unloaded = %q", got)
+	}
+	list := &monitor.WorktreeList{Worktrees: []monitor.WorktreeInfo{
+		{Path: "/work/clean", Branch: "main"},
+		{Path: "/work/feature", Branch: "feature/x", Modified: 1, Dirty: true, Ahead: 2},
+		{Path: "/work/detached", Detached: true, Head: "abc1234", Untracked: 1, Dirty: true},
+	}}
+	if got, want := worktreeSectionText(worktreeSectionState{list: list}), "Worktrees (3 · 2 dirty)"; got != want {
+		t.Errorf("header = %q, want %q", got, want)
+	}
+	if got, want := worktreeLineText(list.Worktrees[1]), "feature/x  · 1 changes  ↑2"; got != want {
+		t.Errorf("branch row = %q, want %q", got, want)
+	}
+	if got, want := worktreeLineText(list.Worktrees[2]), "detached @ abc1234  · 1 changes"; got != want {
+		t.Errorf("detached row = %q, want %q", got, want)
+	}
+}
+
+func TestWorktreesRenderBeforeBranchesWithLocalOnlyActions(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{family: familySlate, variant: theme.VariantDark, forced: true})
+	pal := paletteFor(familySlate, theme.VariantDark)
+	row := newRepoRow(nil, pal)
+	repo := monitor.RepoState{Path: "/work/api", Name: "api", Branch: "main"}
+	worktree := monitor.WorktreeInfo{Path: "/work/api-wt", Branch: "feature/x"}
+	ide, folder := 0, 0
+	row.Configure(repo, rowState{
+		expanded: true,
+		detail:   &monitor.Details{Path: repo.Path},
+		worktrees: worktreeSectionState{open: true, gen: 1,
+			list: &monitor.WorktreeList{Worktrees: []monitor.WorktreeInfo{worktree}}},
+		branches: branchSectionState{list: &monitor.BranchList{}},
+	}, rowActions{
+		onOpenWorktreeIDE:    func(monitor.WorktreeInfo) { ide++ },
+		onOpenWorktreeFolder: func(monitor.WorktreeInfo) { folder++ },
+	})
+
+	var headers []string
+	var child *worktreeRow
+	for _, control := range row.detailControls {
+		switch control := control.(type) {
+		case *sectionHeader:
+			headers = append(headers, control.text)
+		case *worktreeRow:
+			child = control
+		}
+	}
+	if len(headers) != 2 || !strings.HasPrefix(headers[0], "Worktrees") || !strings.HasPrefix(headers[1], "Branches") {
+		t.Fatalf("section order = %v", headers)
+	}
+	if child == nil {
+		t.Fatal("linked worktree row was not rendered")
+	}
+	child.ide.Tapped(nil)
+	child.folder.Tapped(nil)
+	if ide != 1 || folder != 1 {
+		t.Fatalf("local actions = IDE %d, folder %d", ide, folder)
+	}
+}
+
 // The popover measures the expanded row with a throwaway copy. If the two ever
 // disagree the window ends up the wrong size, so this asserts they are handed
 // the same inputs and produce the same height.
@@ -276,6 +337,9 @@ func TestPruneBranchState(t *testing.T) {
 		branchGen:     map[string]uint64{"/live": 1, "/gone": 1},
 		branchBusy:    map[branchKey]bool{{"/live", "main"}: true, {"/gone", "main"}: true},
 		branchErr:     map[branchKey]string{{"/gone", "main"}: "boom"},
+		worktrees:     map[string]*monitor.WorktreeList{"/live": {}, "/gone": {}},
+		worktreeOpen:  map[string]bool{"/live": true, "/gone": true},
+		worktreeGen:   map[string]uint64{"/live": 1, "/gone": 1},
 	}
 	a.pruneBranchState(map[string]bool{"/live": true})
 
@@ -287,6 +351,12 @@ func TestPruneBranchState(t *testing.T) {
 	}
 	if _, ok := a.branches["/live"]; !ok {
 		t.Error("live state was pruned")
+	}
+	if _, ok := a.worktrees["/gone"]; ok {
+		t.Error("worktrees for a vanished repo were kept")
+	}
+	if _, ok := a.worktrees["/live"]; !ok {
+		t.Error("live worktree state was pruned")
 	}
 }
 

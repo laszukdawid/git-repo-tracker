@@ -75,6 +75,15 @@ Practical guidance:
 - **Config / cache files** — written atomically via a private temp file and
   rename; the config lives in the OS config dir (mode `0600` via
   `os.CreateTemp`). No secrets are stored; git credentials are never touched.
+- **Repository Info action** — user-initiated and resolves the repository's
+  actual local config through Git before opening it in the selected editor. It
+  does not parse, copy, or persist the config contents inside this app.
+- **Git Console** — keeps at most 500 completed commands in process memory and
+  discards them on exit. It stores no stdout or environment values. HTTP(S) URL
+  userinfo, common secret query parameters, and bearer authorization values are
+  redacted before a record enters the buffer. Repository paths and other stderr
+  text remain visible in the window, so copied console output should still be
+  reviewed before sharing.
 - **Linux D-Bus single-instance** — the session-bus object exposes only
   `OpenApp` and `ShowSettings`. Any process in the user's session can call
   them; both are harmless.

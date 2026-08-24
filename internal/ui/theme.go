@@ -87,6 +87,13 @@ func searchTheme(base fyne.Theme) fyne.Theme {
 	return sizeOverrideTheme{Theme: base, name: theme.SizeNameInnerPadding, value: searchInnerPad}
 }
 
+// pathEntryTheme preserves cursor-driven horizontal scrolling without letting
+// Fyne's scrollbar chrome consume the single-line path field.
+func pathEntryTheme(base fyne.Theme) fyne.Theme {
+	compact := sizeOverrideTheme{Theme: base, name: theme.SizeNameScrollBarSmall, value: 0}
+	return sizeOverrideTheme{Theme: compact, name: theme.SizeNameScrollBar, value: 0}
+}
+
 // actionClusterLayout packs compact action targets with the shared sibling gap.
 type actionClusterLayout struct{}
 

@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 
 	"github.com/laszukdawid/git-repo-tracker/internal/backend"
 	"github.com/laszukdawid/git-repo-tracker/internal/config"
@@ -187,6 +188,219 @@ func TestVisualPopoverRenders(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSettingsThemeChangeRebuildsCustomSurfaces(t *testing.T) {
+	a := newVisualAppWith(t, familyInk, theme.VariantLight, 2)
+	cfg, err := config.Load(os.Getenv("GIT_REPO_TRACKER_CONFIG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Roots = []config.Root{{Path: "/fixtures/projects", Depth: 3}}
+	cfg.Theme = config.ThemeLight
+	cfg.Palette = config.PaletteInk
+	cfg.FetchIntervalMinutes = 30
+	cfg.LocalRefreshSeconds = 30
+	cfg.ClickAction = config.ActionOpenFolder
+	a.cfg = cfg
+	a.mgr = backend.New(cfg, func() {}, func(string, ...any) {})
+	a.trayOpen = true
+	a.showSettings()
+
+	light := paletteFor(familyInk, theme.VariantLight)
+	dark := paletteFor(familyInk, theme.VariantDark)
+	if got := countRectanglesWithFill(a.settingsWin.Content(), light.cardBg); got < 2 {
+		t.Fatalf("light card surfaces before theme change = %d, want at least 2", got)
+	}
+
+	darkChip := findSegChip(a.settingsWin.Content(), "Dark")
+	if darkChip == nil {
+		t.Fatal("Dark theme chip not found")
+	}
+	darkChip.Tapped(nil)
+
+	if a.variant != theme.VariantDark {
+		t.Fatalf("variant after tapping Dark = %v, want dark", a.variant)
+	}
+	if got := countRectanglesWithFill(a.settingsWin.Content(), light.cardBg); got != 0 {
+		t.Errorf("light card surfaces after theme change = %d, want 0", got)
+	}
+	if got := countRectanglesWithFill(a.settingsWin.Content(), dark.cardBg); got < 2 {
+		t.Errorf("dark card surfaces after theme change = %d, want at least 2", got)
+	}
+}
+
+func TestDirectoryDepthEntryIsNotClippedBelowItsMinimumWidth(t *testing.T) {
+	a := newVisualApp(t, theme.VariantLight, 2)
+	w := test.NewWindow(nil)
+	tips := newTooltipLayer(a.pal)
+	row := a.dirRow(0, []config.Root{{Path: "~/projects", Depth: 5}}, tips, w, nil, nil)
+	w.SetContent(row)
+	settle(w, fyne.NewSize(popoverWidth, row.MinSize().Height))
+
+	depth := findEntryWithText(row, "5")
+	if depth == nil {
+		t.Fatal("folder scan depth entry not found")
+	}
+	if depth.Size().Width < depth.MinSize().Width {
+		t.Fatalf("folder scan depth width = %.0f, below entry minimum %.0f", depth.Size().Width, depth.MinSize().Width)
+	}
+}
+
+func TestDirectoryPathKeepsScrollbarOutOfTextArea(t *testing.T) {
+	families := []struct {
+		name   string
+		family paletteFamily
+	}{
+		{"slate", familySlate},
+		{"ink", familyInk},
+		{"signal", familySignal},
+	}
+	variants := []struct {
+		name    string
+		variant fyne.ThemeVariant
+	}{
+		{"light", theme.VariantLight},
+		{"dark", theme.VariantDark},
+	}
+	for _, family := range families {
+		for _, variant := range variants {
+			t.Run(family.name+"-"+variant.name, func(t *testing.T) {
+				a := newVisualAppWith(t, family.family, variant.variant, 2)
+				w := test.NewWindow(nil)
+				tips := newTooltipLayer(a.pal)
+				longPath := "/fixtures/projects/a/very/long/repository/path/that/does/not/fit"
+				row := a.dirRow(0, []config.Root{{Path: longPath, Depth: 5}}, tips, w, nil, nil)
+				w.SetContent(row)
+				settle(w, fyne.NewSize(popoverWidth, row.MinSize().Height+2*theme.Padding()))
+
+				path := findEntryWithText(row, longPath)
+				if path == nil {
+					t.Fatal("directory path entry not found")
+				}
+				barColor := path.Theme().Color(theme.ColorNameScrollBar, variant.variant)
+				if got := countVisibleRectanglesWithFill(path, barColor); got != 0 {
+					t.Fatalf("directory path renders %d visible scrollbar surfaces over its text, want 0", got)
+				}
+				texts := findCanvasText(path, longPath)
+				if len(texts) == 0 {
+					t.Fatal("directory path glyphs not found")
+				}
+				entryPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(path)
+				entryBottom := entryPos.Y + path.Size().Height
+				for _, text := range texts {
+					textPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(text)
+					if textPos.Y < entryPos.Y || textPos.Y+text.Size().Height > entryBottom {
+						t.Fatalf("directory path glyph bounds %.0f..%.0f escape entry bounds %.0f..%.0f",
+							textPos.Y, textPos.Y+text.Size().Height, entryPos.Y, entryBottom)
+					}
+				}
+				if dir := os.Getenv("GRT_UI_SNAPSHOT_DIR"); dir != "" && family.name == "slate" && variant.name == "dark" {
+					writeImage(t, filepath.Join(dir, "settings-directory-long-path.png"), w.Canvas().Capture())
+				}
+			})
+		}
+	}
+}
+
+func countRectanglesWithFill(object fyne.CanvasObject, want color.Color) int {
+	count := 0
+	switch object := object.(type) {
+	case *canvas.Rectangle:
+		if color.NRGBAModel.Convert(object.FillColor) == color.NRGBAModel.Convert(want) {
+			count++
+		}
+	case *fyne.Container:
+		for _, child := range object.Objects {
+			count += countRectanglesWithFill(child, want)
+		}
+	case fyne.Widget:
+		for _, child := range test.WidgetRenderer(object).Objects() {
+			count += countRectanglesWithFill(child, want)
+		}
+	}
+	return count
+}
+
+func countVisibleRectanglesWithFill(object fyne.CanvasObject, want color.Color) int {
+	count := 0
+	switch object := object.(type) {
+	case *canvas.Rectangle:
+		if object.Visible() && object.Size().Width > 0 && object.Size().Height > 0 &&
+			color.NRGBAModel.Convert(object.FillColor) == color.NRGBAModel.Convert(want) {
+			count++
+		}
+	case *fyne.Container:
+		for _, child := range object.Objects {
+			count += countVisibleRectanglesWithFill(child, want)
+		}
+	case fyne.Widget:
+		for _, child := range test.WidgetRenderer(object).Objects() {
+			count += countVisibleRectanglesWithFill(child, want)
+		}
+	}
+	return count
+}
+
+func findCanvasText(object fyne.CanvasObject, text string) []*canvas.Text {
+	var found []*canvas.Text
+	switch object := object.(type) {
+	case *canvas.Text:
+		if object.Text == text {
+			found = append(found, object)
+		}
+	case *fyne.Container:
+		for _, child := range object.Objects {
+			found = append(found, findCanvasText(child, text)...)
+		}
+	case fyne.Widget:
+		for _, child := range test.WidgetRenderer(object).Objects() {
+			found = append(found, findCanvasText(child, text)...)
+		}
+	}
+	return found
+}
+
+func findSegChip(object fyne.CanvasObject, text string) *segChip {
+	if chip, ok := object.(*segChip); ok && chip.text == text {
+		return chip
+	}
+	if container, ok := object.(*fyne.Container); ok {
+		for _, child := range container.Objects {
+			if chip := findSegChip(child, text); chip != nil {
+				return chip
+			}
+		}
+	}
+	if widget, ok := object.(fyne.Widget); ok {
+		for _, child := range test.WidgetRenderer(widget).Objects() {
+			if chip := findSegChip(child, text); chip != nil {
+				return chip
+			}
+		}
+	}
+	return nil
+}
+
+func findEntryWithText(object fyne.CanvasObject, text string) *widget.Entry {
+	if entry, ok := object.(*widget.Entry); ok && entry.Text == text {
+		return entry
+	}
+	if container, ok := object.(*fyne.Container); ok {
+		for _, child := range container.Objects {
+			if entry := findEntryWithText(child, text); entry != nil {
+				return entry
+			}
+		}
+	}
+	if widget, ok := object.(fyne.Widget); ok {
+		for _, child := range test.WidgetRenderer(widget).Objects() {
+			if entry := findEntryWithText(child, text); entry != nil {
+				return entry
+			}
+		}
+	}
+	return nil
 }
 
 func TestVisualPopoverStates(t *testing.T) {

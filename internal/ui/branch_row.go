@@ -383,6 +383,234 @@ func shortAge(t time.Time) string {
 	}
 }
 
+const worktreeRowH = 46
+
+type worktreeRow struct {
+	widget.BaseWidget
+	pal      palette
+	info     monitor.WorktreeInfo
+	tips     *tooltipLayer
+	bg       *canvas.Rectangle
+	title    *canvas.Text
+	path     *canvas.Text
+	ide      *iconButton
+	folder   *iconButton
+	box      *fyne.Container
+	onHover  func(bool)
+	hovered  bool
+	disabled bool
+	width    float32
+}
+
+func newWorktreeRow(tips *tooltipLayer, pal palette, info monitor.WorktreeInfo,
+	onHover func(bool), onIDE, onFolder func(monitor.WorktreeInfo)) *worktreeRow {
+	w := &worktreeRow{pal: pal, info: info, tips: tips, onHover: onHover}
+	w.bg = canvas.NewRectangle(color.Transparent)
+	w.title = canvas.NewText(worktreeLineText(info), pal.rowSub)
+	w.title.TextSize = branchTextSize
+	w.title.TextStyle = fyne.TextStyle{Monospace: true, Bold: true}
+	w.path = canvas.NewText(collapseHome(info.Path), pal.faint)
+	w.path.TextSize = textXs
+	w.path.TextStyle = fyne.TextStyle{Monospace: true}
+	w.ide = newIconButton(theme.ComputerIcon(), colorNameMuted,
+		"Open this worktree in the selected editor", pal.openBtnBg, pal.btnHover,
+		func() {
+			if onIDE != nil {
+				onIDE(w.info)
+			}
+		})
+	w.folder = newIconButton(theme.FolderOpenIcon(), colorNameMuted,
+		"Open this worktree folder", pal.openBtnBg, pal.btnHover,
+		func() {
+			if onFolder != nil {
+				onFolder(w.info)
+			}
+		})
+	for _, button := range []*iconButton{w.ide, w.folder} {
+		button.size = branchActionBox
+		button.useCompactRowChrome()
+	}
+	w.box = container.NewWithoutLayout(w.bg, w.title, w.path, w.ide, w.folder)
+	w.ExtendBaseWidget(w)
+	return w
+}
+
+func (w *worktreeRow) MouseIn(*desktop.MouseEvent) {
+	w.hovered = true
+	w.bg.FillColor = w.pal.rowHover
+	if w.onHover != nil {
+		w.onHover(true)
+	}
+	if w.tips != nil {
+		w.tips.showDelayed(worktreeTooltip(w.info), w, tipDelay)
+	}
+	w.Refresh()
+}
+
+func (w *worktreeRow) MouseMoved(e *desktop.MouseEvent) {
+	tip := worktreeTooltip(w.info)
+	for _, button := range []*iconButton{w.ide, w.folder} {
+		over := withinBox(e.Position, button.Position(), button.Size())
+		button.setHovered(over)
+		if over {
+			tip = button.tip
+		}
+	}
+	if w.tips != nil {
+		w.tips.showDelayed(tip, w, tipDelay)
+	}
+}
+
+func (w *worktreeRow) MouseOut() {
+	w.hovered = false
+	w.bg.FillColor = color.Transparent
+	w.ide.setHovered(false)
+	w.folder.setHovered(false)
+	if w.onHover != nil {
+		w.onHover(false)
+	}
+	if w.tips != nil {
+		w.tips.hide()
+	}
+	w.Refresh()
+}
+
+func (w *worktreeRow) setKeyboardGuard(guard func() bool) {
+	w.ide.keyboardGuard = guard
+	w.folder.keyboardGuard = guard
+}
+
+func (w *worktreeRow) setDisabled(disabled bool) {
+	w.disabled = disabled
+	w.ide.setDisabled(disabled)
+	w.folder.setDisabled(disabled)
+}
+
+func (w *worktreeRow) deactivate() {
+	w.ide.release()
+	w.folder.release()
+	w.onHover = nil
+}
+
+func (w *worktreeRow) CreateRenderer() fyne.WidgetRenderer {
+	return &worktreeRowRenderer{w: w, objects: []fyne.CanvasObject{w.box}}
+}
+
+type worktreeRowRenderer struct {
+	w       *worktreeRow
+	objects []fyne.CanvasObject
+}
+
+func (r *worktreeRowRenderer) MinSize() fyne.Size {
+	return fyne.NewSize(branchMinLabelW+2*(branchActionBox+branchGap2)+branchRightGutter, worktreeRowH)
+}
+
+func (r *worktreeRowRenderer) Layout(size fyne.Size) {
+	r.w.width = size.Width
+	r.w.box.Resize(size)
+	r.w.bg.Resize(size)
+	x := size.Width - branchRightGutter
+	y := (size.Height - branchActionBox) / 2
+	for _, button := range []*iconButton{r.w.folder, r.w.ide} {
+		x -= branchActionBox
+		button.Move(fyne.NewPos(x, y))
+		button.Resize(fyne.NewSize(branchActionBox, branchActionBox))
+		x -= branchGap2
+	}
+	textWidth := x - spaceXs
+	r.w.title.Text = truncateToWidth(worktreeLineText(r.w.info), textWidth, branchTextSize, r.w.title.TextStyle)
+	r.w.path.Text = truncateToWidth(collapseHome(r.w.info.Path), textWidth, textXs, r.w.path.TextStyle)
+	r.w.title.Move(fyne.NewPos(spaceXs, 5))
+	r.w.title.Resize(r.w.title.MinSize())
+	r.w.path.Move(fyne.NewPos(spaceXs, 24))
+	r.w.path.Resize(r.w.path.MinSize())
+}
+
+func (r *worktreeRowRenderer) Refresh() {
+	if r.w.hovered {
+		r.w.bg.FillColor = r.w.pal.rowHover
+	} else {
+		r.w.bg.FillColor = color.Transparent
+	}
+	r.w.ide.dim = !r.w.hovered
+	r.w.folder.dim = !r.w.hovered
+	r.w.ide.setDisabled(r.w.disabled)
+	r.w.folder.setDisabled(r.w.disabled)
+	r.Layout(fyne.NewSize(r.w.width, r.MinSize().Height))
+	r.w.bg.Refresh()
+	r.w.title.Refresh()
+	r.w.path.Refresh()
+	r.w.ide.Refresh()
+	r.w.folder.Refresh()
+}
+
+func (r *worktreeRowRenderer) Objects() []fyne.CanvasObject { return r.objects }
+func (r *worktreeRowRenderer) Destroy()                     {}
+
+func worktreeLineText(w monitor.WorktreeInfo) string {
+	name := w.Branch
+	if w.Detached || name == "" {
+		name = "detached"
+		if w.Head != "" {
+			name += " @ " + w.Head
+		}
+	}
+	var status []string
+	changes := w.Staged + w.Modified + w.Deleted + w.Untracked
+	switch {
+	case w.Err != "":
+		status = append(status, "error")
+	case w.Prunable != "":
+		status = append(status, "prunable")
+	case w.Conflicts > 0:
+		status = append(status, fmt.Sprintf("%d conflicts", w.Conflicts))
+	case w.Operation != "":
+		status = append(status, w.Operation)
+	case changes > 0:
+		status = append(status, fmt.Sprintf("%d changes", changes))
+	}
+	if w.Ahead > 0 {
+		status = append(status, fmt.Sprintf("↑%d", w.Ahead))
+	}
+	if w.Behind > 0 {
+		status = append(status, fmt.Sprintf("↓%d", w.Behind))
+	}
+	if len(status) == 0 {
+		return name
+	}
+	return name + "  · " + strings.Join(status, "  ")
+}
+
+func worktreeTooltip(w monitor.WorktreeInfo) string {
+	lines := []string{worktreeLineText(w), collapseHome(w.Path)}
+	if w.Locked != "" {
+		lines = append(lines, "Locked: "+w.Locked)
+	}
+	if w.Prunable != "" {
+		lines = append(lines, "Prunable: "+w.Prunable)
+	}
+	if w.Err != "" {
+		lines = append(lines, w.Err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func worktreeSectionText(sec worktreeSectionState) string {
+	if sec.list == nil || sec.list.Err != "" {
+		return "Worktrees"
+	}
+	dirty := 0
+	for _, worktree := range sec.list.Worktrees {
+		if worktree.Dirty || worktree.Conflicts > 0 || worktree.Operation != "" {
+			dirty++
+		}
+	}
+	if dirty > 0 {
+		return fmt.Sprintf("Worktrees (%d · %d dirty)", len(sec.list.Worktrees), dirty)
+	}
+	return fmt.Sprintf("Worktrees (%d)", len(sec.list.Worktrees))
+}
+
 // branchTooltip carries what the one-line row could not: the commit subject, the
 // upstream, and why a branch cannot be pulled.
 func branchTooltip(b monitor.BranchInfo) string {

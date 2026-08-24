@@ -125,6 +125,80 @@ func findBranch(bl BranchList, name string) (BranchInfo, bool) {
 	return BranchInfo{}, false
 }
 
+func TestWorktreesListsLinkedStatusWithoutChangingRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull,
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := filepath.Join(base, "repo")
+	run(base, "init", "-b", "main", repo)
+	write(filepath.Join(repo, "tracked.txt"), "initial\n")
+	run(repo, "add", ".")
+	run(repo, "commit", "-m", "initial")
+	run(repo, "branch", "feature/x")
+
+	feature := filepath.Join(base, "feature with spaces")
+	detached := filepath.Join(base, "detached")
+	run(repo, "worktree", "add", feature, "feature/x")
+	run(repo, "worktree", "add", "--detach", detached, "HEAD")
+	write(filepath.Join(feature, "tracked.txt"), "changed\n")
+	write(filepath.Join(detached, "new.txt"), "untracked\n")
+
+	beforeList := run(repo, "worktree", "list", "--porcelain")
+	beforeFeature := run(feature, "status", "--porcelain=v2", "--branch")
+	beforeDetached := run(detached, "status", "--porcelain=v2", "--branch")
+
+	mgr := New(&config.Config{}, nil, nil)
+	got := mgr.Worktrees(repo)
+	if got.Err != "" {
+		t.Fatalf("Worktrees: %s", got.Err)
+	}
+	if len(got.Worktrees) != 2 {
+		t.Fatalf("linked worktrees = %d, want 2: %+v", len(got.Worktrees), got.Worktrees)
+	}
+	byPath := map[string]WorktreeInfo{}
+	for _, wt := range got.Worktrees {
+		byPath[cleanAbsolutePath(wt.Path)] = wt
+	}
+	if wt := byPath[cleanAbsolutePath(feature)]; wt.Branch != "feature/x" || !wt.Dirty || wt.Modified != 1 {
+		t.Errorf("feature worktree = %+v", wt)
+	}
+	if wt := byPath[cleanAbsolutePath(detached)]; !wt.Detached || !wt.Dirty || wt.Untracked != 1 {
+		t.Errorf("detached worktree = %+v", wt)
+	}
+
+	if after := run(repo, "worktree", "list", "--porcelain"); after != beforeList {
+		t.Error("listing worktrees changed the repository's worktree registry")
+	}
+	if after := run(feature, "status", "--porcelain=v2", "--branch"); after != beforeFeature {
+		t.Error("listing worktrees changed the feature checkout")
+	}
+	if after := run(detached, "status", "--porcelain=v2", "--branch"); after != beforeDetached {
+		t.Error("listing worktrees changed the detached checkout")
+	}
+}
+
 // The whole point of the control: it does what the branch needs, and "diverged —
 // cannot fast-forward" is not the answer to two of the three cases.
 func TestSyncBranchPushesMergesAndPulls(t *testing.T) {

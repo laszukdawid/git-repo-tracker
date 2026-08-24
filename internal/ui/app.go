@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -75,6 +76,14 @@ type App struct {
 	// settingsWin is the single settings window instance, reused and focused when
 	// the user clicks Settings while it is already open.
 	settingsWin fyne.Window
+
+	// gitConsoleWin presents the process-local, redacted command trace. The text,
+	// query and auto-scroll preference are UI state only and are never persisted.
+	gitConsoleWin   fyne.Window
+	gitConsoleText  *widget.TextGrid
+	gitConsoleCount *widget.Label
+	gitConsoleQuery string
+	gitConsoleAuto  bool
 
 	// Appearance: pal holds the popover's custom colours and variant records which
 	// light/dark variant they were built for, so we can tell when the OS flipped.
@@ -153,6 +162,12 @@ type App struct {
 	branchLimit map[string]int
 	// branchFetching marks repositories with an explicit fetch in flight.
 	branchFetching map[string]bool
+	// Worktree listings are local-only, loaded lazily, and never persisted. A
+	// separate generation keeps expanded-row height/render caches comparable.
+	worktrees       map[string]*monitor.WorktreeList
+	worktreeOpen    map[string]bool
+	worktreeLoading map[string]bool
+	worktreeGen     map[string]uint64
 	// matchHint records, per repository, the branch that a search matched when
 	// the repository's own name and path did not.
 	matchHint map[string]string
@@ -192,6 +207,7 @@ func NewApp(cfg *config.Config) (*App, error) {
 	a.applyTheme() // resolve the configured appearance before any UI is built
 	a.mgr = backend.New(cfg, a.onChange, a.logf)
 	a.mgr.SetOnActivity(a.onActivity)
+	a.mgr.SetOnGitCommand(a.onGitCommand)
 	a.installEditorResolver()
 	return a, nil
 }
@@ -213,6 +229,10 @@ func (a *App) initState() {
 	a.branchGen = map[string]uint64{}
 	a.branchLimit = map[string]int{}
 	a.branchFetching = map[string]bool{}
+	a.worktrees = map[string]*monitor.WorktreeList{}
+	a.worktreeOpen = map[string]bool{}
+	a.worktreeLoading = map[string]bool{}
+	a.worktreeGen = map[string]uint64{}
 	a.matchHint = map[string]string{}
 	a.ideIcons = map[string]fyne.Resource{}
 	a.bindex = newBranchIndex()
@@ -224,6 +244,10 @@ func (a *App) initState() {
 // progress changes. It only hops threads; everything else happens on the main
 // thread in applyActivity.
 func (a *App) onActivity() { fyne.Do(a.applyActivity) }
+
+// onGitCommand is invoked from whichever monitor goroutine executed Git. Keep
+// the callback tiny and marshal the optional console repaint to Fyne's thread.
+func (a *App) onGitCommand() { fyne.Do(a.refreshGitConsole) }
 
 // applyActivity pulls the monitor's current progress and any queued completions,
 // and repaints the status line. Main thread only.
@@ -587,6 +611,7 @@ func (a *App) openConfigInEditor() {
 
 func (a *App) quit() {
 	a.stopTimers()
+	a.mgr.SetOnGitCommand(nil)
 	a.mgr.Stop()
 	if a.remoteCloser != nil {
 		_ = a.remoteCloser.Close()
@@ -598,4 +623,51 @@ func (a *App) quit() {
 // logf prints a timestamped diagnostic line to stderr.
 func (a *App) logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, time.Now().Format("15:04:05")+"  "+format+"\n", args...)
+}
+
+func filterGitCommands(commands []monitor.GitCommand, query string) []monitor.GitCommand {
+	terms := strings.Fields(strings.ToLower(query))
+	if len(terms) == 0 {
+		return commands
+	}
+	filtered := make([]monitor.GitCommand, 0, len(commands))
+	for _, command := range commands {
+		haystack := strings.ToLower(command.RepoPath + "\n" + command.CommandLine() + "\n" + command.Stderr)
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			filtered = append(filtered, command)
+		}
+	}
+	return filtered
+}
+
+func formatGitCommands(commands []monitor.GitCommand) string {
+	if len(commands) == 0 {
+		return "No Git commands yet."
+	}
+	var out strings.Builder
+	for i, command := range commands {
+		if i > 0 {
+			out.WriteString("\n\n")
+		}
+		mark := "✓"
+		if command.ExitCode != 0 {
+			mark = "✕"
+		}
+		duration := command.Duration.Round(time.Millisecond)
+		fmt.Fprintf(&out, "%s  %s exit %d  %s\n", command.StartedAt.Format("15:04:05.000"),
+			mark, command.ExitCode, duration)
+		fmt.Fprintf(&out, "repo: %s\n%s", command.RepoPath, command.CommandLine())
+		if stderr := strings.TrimSpace(command.Stderr); stderr != "" {
+			out.WriteByte('\n')
+			out.WriteString(stderr)
+		}
+	}
+	return out.String()
 }

@@ -50,11 +50,12 @@ func (s *rowStatus) pulling() bool { return s != nil && s.phase == rowPulling }
 // parameters, where `false, false, nil, nil, nil, nil, nil` at a call site told
 // the reader nothing.
 type rowState struct {
-	expanded bool
-	status   *rowStatus // nil when the row is idle
-	detail   *monitor.Details
-	selected bool // keyboard highlight
-	branches branchSectionState
+	expanded  bool
+	status    *rowStatus // nil when the row is idle
+	detail    *monitor.Details
+	selected  bool // keyboard highlight
+	worktrees worktreeSectionState
+	branches  branchSectionState
 
 	// match is the branch a search matched on, when the repository's own name
 	// and path did not. Shown on the branch line so a hit is never unexplained.
@@ -95,6 +96,23 @@ type branchSectionState struct {
 	fetching bool
 }
 
+type worktreeSectionState struct {
+	open    bool
+	loading bool
+	gen     uint64
+	list    *monitor.WorktreeList
+}
+
+func (s worktreeSectionState) fingerprint() worktreeFingerprint {
+	return worktreeFingerprint{open: s.open, loading: s.loading, gen: s.gen}
+}
+
+type worktreeFingerprint struct {
+	open    bool
+	loading bool
+	gen     uint64
+}
+
 // fingerprint is the comparable part of the section state.
 func (s branchSectionState) fingerprint() branchFingerprint {
 	return branchFingerprint{open: s.open, loading: s.loading, gen: s.gen,
@@ -115,8 +133,13 @@ type rowActions struct {
 	onFresh  func(monitor.RepoState)
 	onOpen   func(monitor.RepoState)
 
-	onOpenIDE func(monitor.RepoState)
-	onPickIDE func(monitor.RepoState)
+	onOpenIDE            func(monitor.RepoState)
+	onPickIDE            func(monitor.RepoState)
+	onOpenConfig         func(monitor.RepoState)
+	onToggleWorktrees    func(monitor.RepoState)
+	onRefreshWorktrees   func(monitor.RepoState)
+	onOpenWorktreeIDE    func(monitor.WorktreeInfo)
+	onOpenWorktreeFolder func(monitor.WorktreeInfo)
 
 	onToggleBranches func(monitor.RepoState)
 	onPullBranch     func(monitor.RepoState, monitor.BranchInfo)
@@ -495,6 +518,7 @@ type repoRow struct {
 	freshBtn       *iconButton
 	ideBtn         *ideButton
 	openBtn        *iconButton
+	infoBtn        *iconButton
 	spinner        *widget.Activity
 	rightBox       *fyne.Container
 	detailBox      *fyne.Container
@@ -509,7 +533,8 @@ type repoRow struct {
 	detailData monitor.Details
 	detailSet  bool
 	detailMade bool
-	branchFP   branchFingerprint // comparable digest of the Branches section
+	branchFP   branchFingerprint   // comparable digest of the Branches section
+	worktreeFP worktreeFingerprint // comparable digest of the Worktrees section
 
 	// Two sources because the detail lines are themselves Hoverable: selfHovered is
 	// the pointer on the row body, detailHovered on a detail line. Either keeps the
@@ -526,6 +551,7 @@ type repoRow struct {
 	onPull   func(monitor.RepoState)
 	onFresh  func(monitor.RepoState)
 	onOpen   func(monitor.RepoState)
+	onConfig func(monitor.RepoState)
 }
 
 type detailRenderState struct {
@@ -578,7 +604,13 @@ func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
 				r.onOpen(r.repo)
 			}
 		})
-	for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
+	r.infoBtn = newIconButton(theme.InfoIcon(), colorNameMuted, "Open local Git config in the selected editor",
+		pal.openBtnBg, pal.btnHover, func() {
+			if r.onConfig != nil {
+				r.onConfig(r.repo)
+			}
+		})
+	for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn, r.infoBtn} {
 		button.useCompactRowChrome()
 		button.onFocusChanged = r.setActionFocused
 		button.keyboardGuard = r.acceptsKeyboard
@@ -598,7 +630,7 @@ func newRepoRow(tips *tooltipLayer, pal palette) *repoRow {
 
 	r.spinner = widget.NewActivity()
 	r.spinner.Hide()
-	r.rightBox = container.New(&actionClusterLayout{}, r.pullBtn, r.freshBtn, r.ideBtn, r.openBtn, r.spinner)
+	r.rightBox = container.New(&actionClusterLayout{}, r.pullBtn, r.freshBtn, r.ideBtn, r.openBtn, r.infoBtn, r.spinner)
 	r.chevSlot = container.NewStack()
 	r.glyphSlot = container.NewStack()
 	r.detailBox = container.New(&tightVBox{gap: 4})
@@ -621,6 +653,7 @@ func (r *repoRow) Configure(repo monitor.RepoState, st rowState, act rowActions)
 	r.pulling = st.status.pulling()
 	r.selected = st.selected
 	r.onExpand, r.onPull, r.onFresh, r.onOpen = act.onExpand, act.onPull, act.onFresh, act.onOpen
+	r.onConfig = act.onOpenConfig
 	r.bindIDE(repo, st, act)
 	r.tip = repoTooltip(repo, time.Now())
 	if repo.KeepFresh {
@@ -694,15 +727,17 @@ func (r *repoRow) Configure(repo monitor.RepoState, st rowState, act rowActions)
 	if st.expanded {
 		state := detailState(repo)
 		fp := st.branches.fingerprint()
-		detailChanged := r.detailMade && (r.detailRepo != state || r.detailSet != (detail != nil) || r.branchFP != fp)
+		worktreeFP := st.worktrees.fingerprint()
+		detailChanged := r.detailMade && (r.detailRepo != state || r.detailSet != (detail != nil) || r.branchFP != fp || r.worktreeFP != worktreeFP)
 		if !detailChanged && r.detailMade && detail != nil {
 			detailChanged = r.detailData != *detail
 		}
 		if !r.detailMade || detailChanged {
-			r.rebuildDetail(detail, repo, st.branches, act)
+			r.rebuildDetail(detail, repo, st.worktrees, st.branches, act)
 			r.detailRepo = state
 			r.detailSet = detail != nil
 			r.branchFP = fp
+			r.worktreeFP = worktreeFP
 			if detail != nil {
 				r.detailData = *detail
 			} else {
@@ -881,7 +916,7 @@ func (r *repoRow) clearMarquees() {
 }
 
 func (r *repoRow) rebuildDetail(d *monitor.Details, repo monitor.RepoState,
-	sec branchSectionState, act rowActions) {
+	worktrees worktreeSectionState, sec branchSectionState, act rowActions) {
 	r.clearMarquees()
 	r.detailBox.RemoveAll()
 	// Surface any fetch/status error first, in red — this is what the red "!" glyph
@@ -894,6 +929,7 @@ func (r *repoRow) rebuildDetail(d *monitor.Details, repo monitor.RepoState,
 		if repoErrorMsg(r.repo) == "" {
 			r.detailBox.Add(r.line("Loading…", r.pal.faint, branchSize, false, false, false))
 		}
+		r.addWorktreeSection(repo, worktrees, act)
 		r.addBranchSection(repo, sec, act)
 		r.activateMarquees() // let a long error message scroll even before details load
 		r.detailBox.Refresh()
@@ -915,6 +951,7 @@ func (r *repoRow) rebuildDetail(d *monitor.Details, repo monitor.RepoState,
 	r.detailBox.Add(r.line("Origin "+d.OriginRef, r.pal.detailKey, branchSize, true, false, false))
 	r.addCommit(d.OriginHash, d.OriginTime, d.OriginMsg)
 
+	r.addWorktreeSection(repo, worktrees, act)
 	r.addBranchSection(repo, sec, act)
 	r.activateMarquees()
 	r.detailBox.Refresh()
@@ -930,9 +967,67 @@ func (r *repoRow) rebuildDetail(d *monitor.Details, repo monitor.RepoState,
 // Bounding the section's height and scrolling within it keeps the row a sane
 // size however many branches a repository has.
 const (
-	branchScrollMax = 172 // about six branch rows
-	branchPageSize  = 40  // how many more branches one "show more" reveals
+	branchScrollMax   = 172 // about six branch rows
+	branchPageSize    = 40  // how many more branches one "show more" reveals
+	worktreeScrollMax = 184
 )
+
+// addWorktreeSection shows linked checkouts without turning them into duplicate
+// top-level repositories. Its actions are intentionally local-only: open in the
+// selected editor or reveal in the file manager.
+func (r *repoRow) addWorktreeSection(repo monitor.RepoState, sec worktreeSectionState, act rowActions) {
+	header := newSectionHeader(r.pal, worktreeSectionText(sec), sec.open, func() {
+		if act.onToggleWorktrees != nil {
+			act.onToggleWorktrees(repo)
+		}
+	})
+	header.onHover = r.setDetailHovered
+	header.setKeyboardGuard(r.acceptsKeyboard)
+	r.detailControls = append(r.detailControls, header)
+	if act.onRefreshWorktrees != nil && sec.open {
+		tip := "Refresh linked worktrees"
+		if sec.loading {
+			tip = "Refreshing worktrees…"
+		}
+		refresh := newIconButton(theme.ViewRefreshIcon(), colorNameMuted, tip,
+			color.Transparent, r.pal.btnHover, func() { act.onRefreshWorktrees(repo) })
+		refresh.disabled = sec.loading
+		header.setAction(refresh)
+	}
+	r.detailBox.Add(header)
+	if !sec.open {
+		return
+	}
+	switch {
+	case sec.loading && sec.list == nil:
+		r.detailBox.Add(r.line("Loading worktrees…", r.pal.faint, branchSize, false, false, false))
+		return
+	case sec.list == nil:
+		return
+	case sec.list.Err != "":
+		r.detailBox.Add(r.line(sec.list.Err, r.pal.statusError, branchSize, false, false, true))
+		return
+	case len(sec.list.Worktrees) == 0:
+		r.detailBox.Add(r.line("no linked worktrees", r.pal.faint, branchSize, false, false, false))
+		return
+	}
+
+	list := container.New(&tightVBox{gap: space3xs})
+	for _, worktree := range sec.list.Worktrees {
+		row := newWorktreeRow(r.tips, r.pal, worktree, r.setDetailHovered,
+			act.onOpenWorktreeIDE, act.onOpenWorktreeFolder)
+		row.setKeyboardGuard(r.acceptsKeyboard)
+		r.detailControls = append(r.detailControls, row)
+		list.Add(row)
+	}
+	scroll := container.NewVScroll(list)
+	height := list.MinSize().Height
+	if height > worktreeScrollMax {
+		height = worktreeScrollMax
+	}
+	scroll.SetMinSize(fyne.NewSize(0, height))
+	r.detailBox.Add(scroll)
+}
 
 // addBranchSection appends the collapsible Branches section to the detail panel.
 // Closed it is one tappable line; open it lists the repository's branches, each
@@ -1082,7 +1177,7 @@ func (r *repoRow) releaseBinding() {
 	r.clearMarquees()
 	r.spinner.Stop()
 	r.spinner.Hide()
-	r.onExpand, r.onPull, r.onFresh, r.onOpen = nil, nil, nil, nil
+	r.onExpand, r.onPull, r.onFresh, r.onOpen, r.onConfig = nil, nil, nil, nil, nil
 	r.ideBtn.onOpen, r.ideBtn.onPick = nil, nil
 	r.detailMade = false
 }
@@ -1117,17 +1212,18 @@ func (r *repoRow) updateActions() {
 	}
 	showCount := false
 	if r.pulling {
-		for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
+		for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn, r.infoBtn} {
 			button.setDisabled(true)
 		}
 		r.ideBtn.setDisabled(true)
 		r.pullBtn.Hide()
 		r.freshBtn.Hide()
 		r.openBtn.Hide()
+		r.infoBtn.Hide()
 		r.spinner.Show()
 		r.spinner.Start()
 	} else {
-		for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
+		for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn, r.infoBtn} {
 			button.setDisabled(false)
 		}
 		r.ideBtn.setDisabled(false)
@@ -1143,11 +1239,13 @@ func (r *repoRow) updateActions() {
 			}
 			r.ideBtn.Show()
 			r.openBtn.Show()
+			r.infoBtn.Show()
 		} else {
 			r.pullBtn.Hide()
 			r.freshBtn.Hide()
 			r.ideBtn.Hide()
 			r.openBtn.Hide()
+			r.infoBtn.Hide()
 			showCount = true
 		}
 	}
@@ -1214,9 +1312,9 @@ func (r *repoRow) acceptsKeyboard() bool {
 }
 
 func (r *repoRow) cancelKeyboardInteraction() {
-	unfocusCanvasObjects(r, r.pullBtn, r.freshBtn, r.ideBtn, r.openBtn)
+	unfocusCanvasObjects(r, r.pullBtn, r.freshBtn, r.ideBtn, r.openBtn, r.infoBtn)
 	r.interaction.clear()
-	for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
+	for _, button := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn, r.infoBtn} {
 		button.state.clear()
 	}
 	r.ideBtn.state.clear()
@@ -1257,7 +1355,7 @@ func (r *repoRow) MouseMoved(ev *desktop.MouseEvent) {
 	}
 
 	var hovered *iconButton
-	for _, b := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn} {
+	for _, b := range []*iconButton{r.pullBtn, r.freshBtn, r.openBtn, r.infoBtn} {
 		in := false
 		if b.Visible() {
 			in = withinBox(ev.Position, r.rightBox.Position().Add(b.Position()), b.Size())
@@ -1332,6 +1430,7 @@ func (r *repoRow) MouseOut() {
 	r.pullBtn.setHovered(false)
 	r.freshBtn.setHovered(false)
 	r.openBtn.setHovered(false)
+	r.infoBtn.setHovered(false)
 	r.ideBtn.setHovered(false)
 	r.setPressed(false)
 	if r.tips != nil {
@@ -1356,6 +1455,7 @@ func (r *repoRow) resetHover() {
 	r.pullBtn.setHovered(false)
 	r.freshBtn.setHovered(false)
 	r.openBtn.setHovered(false)
+	r.infoBtn.setHovered(false)
 	r.ideBtn.setHovered(false)
 	r.setPressed(false)
 	r.selfHovered = false
@@ -1377,7 +1477,7 @@ func (r *repoRow) recomputeHover() {
 }
 
 func (r *repoRow) setActionFocused(bool) {
-	focused := r.pullBtn.state.focused || r.freshBtn.state.focused || r.ideBtn.state.focused || r.openBtn.state.focused
+	focused := r.pullBtn.state.focused || r.freshBtn.state.focused || r.ideBtn.state.focused || r.openBtn.state.focused || r.infoBtn.state.focused
 	if r.actionFocused == focused {
 		return
 	}

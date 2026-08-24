@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,7 +129,7 @@ func TestRepoRowActionsKeepLargeTargetsWithCompactChrome(t *testing.T) {
 	row := newRepoRow(nil, paletteFor(familySlate, theme.VariantDark))
 
 	for name, button := range map[string]*iconButton{
-		"pull": row.pullBtn, "refresh": row.freshBtn, "folder": row.openBtn,
+		"pull": row.pullBtn, "refresh": row.freshBtn, "folder": row.openBtn, "info": row.infoBtn,
 	} {
 		t.Run(name, func(t *testing.T) {
 			renderer := test.WidgetRenderer(button).(*iconButtonRenderer)
@@ -158,6 +159,85 @@ func TestRepoRowActionsKeepLargeTargetsWithCompactChrome(t *testing.T) {
 	}
 	if got := renderer.img.Size(); got != fyne.NewSize(13, 13) {
 		t.Errorf("IDE icon = %v, want 13x13", got)
+	}
+}
+
+func TestRepoInfoActionOpensConfigAndDisablesWhilePulling(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{family: familySlate, variant: theme.VariantDark, forced: true})
+	row := newRepoRow(nil, paletteFor(familySlate, theme.VariantDark))
+	repo := monitor.RepoState{Path: "/work/api", Name: "api"}
+	opened := 0
+	actions := rowActions{onOpenConfig: func(got monitor.RepoState) {
+		if got.Path != repo.Path {
+			t.Errorf("opened config for %q, want %q", got.Path, repo.Path)
+		}
+		opened++
+	}}
+	row.Configure(repo, rowState{}, actions)
+	row.hovered = true
+	row.updateActions()
+	if !row.infoBtn.Visible() {
+		t.Fatal("repository Info action is not visible with the other row actions")
+	}
+	row.infoBtn.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	if opened != 1 {
+		t.Fatalf("Info action count = %d, want 1", opened)
+	}
+
+	row.Configure(repo, rowState{status: &rowStatus{phase: rowPulling, msg: "Pulling…"}}, actions)
+	if row.infoBtn.Visible() {
+		t.Fatal("Info action remained visible while the repository was pulling")
+	}
+	row.infoBtn.TypedKey(&fyne.KeyEvent{Name: fyne.KeyReturn})
+	if opened != 1 {
+		t.Fatal("disabled Info action still opened the config")
+	}
+}
+
+func TestGitConsoleFormatsAndFiltersStructuredCommands(t *testing.T) {
+	commands := []monitor.GitCommand{
+		{
+			StartedAt: time.Date(2026, 8, 24, 10, 30, 0, 0, time.UTC), Duration: 125 * time.Millisecond,
+			RepoPath: "/work/api", Executable: "/usr/bin/git",
+			Args: []string{"-C", "/work/api", "status", "--short"}, ExitCode: 0,
+		},
+		{
+			StartedAt: time.Date(2026, 8, 24, 10, 31, 2, 0, time.UTC), Duration: 2 * time.Second,
+			RepoPath: "/work/web", Executable: "/usr/bin/git",
+			Args: []string{"-C", "/work/web", "fetch", "origin"}, ExitCode: 128,
+			Stderr: "fatal: authentication failed",
+		},
+	}
+
+	got := formatGitCommands(commands)
+	for _, want := range []string{
+		"10:30:00.000  ✓ exit 0  125ms",
+		"repo: /work/api",
+		"/usr/bin/git -C /work/api status --short",
+		"10:31:02.000  ✕ exit 128  2s",
+		"fatal: authentication failed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatted console missing %q:\n%s", want, got)
+		}
+	}
+
+	filtered := filterGitCommands(commands, "authentication")
+	if len(filtered) != 1 || filtered[0].RepoPath != "/work/web" {
+		t.Fatalf("filtered commands = %+v", filtered)
+	}
+	if empty := formatGitCommands(nil); empty != "No Git commands yet." {
+		t.Fatalf("empty console = %q", empty)
+	}
+}
+
+func TestOptionsPanelActionsFitPopoverWithGitConsole(t *testing.T) {
+	test.NewApp().Settings().SetTheme(glassTheme{family: familySlate, variant: theme.VariantDark, forced: true})
+	a := &App{pal: paletteFor(familySlate, theme.VariantDark)}
+	a.initState()
+	panel := a.buildOptionsPanel()
+	if got, maxWidth := panel.MinSize().Width, float32(popoverWidth)-2*theme.Padding(); got > maxWidth {
+		t.Fatalf("options panel width = %v, exceeds available popover width %v", got, maxWidth)
 	}
 }
 
@@ -345,15 +425,16 @@ func TestRepoPullingHidesAndDisablesEveryAction(t *testing.T) {
 		status:  &rowStatus{phase: rowPulling, msg: "Pulling…"},
 		ideIcon: theme.ComputerIcon(),
 	}, rowActions{
-		onPull:    func(monitor.RepoState) { called++ },
-		onFresh:   func(monitor.RepoState) { called++ },
-		onOpen:    func(monitor.RepoState) { called++ },
-		onOpenIDE: func(monitor.RepoState) { called++ },
-		onPickIDE: func(monitor.RepoState) { called++ },
+		onPull:       func(monitor.RepoState) { called++ },
+		onFresh:      func(monitor.RepoState) { called++ },
+		onOpen:       func(monitor.RepoState) { called++ },
+		onOpenConfig: func(monitor.RepoState) { called++ },
+		onOpenIDE:    func(monitor.RepoState) { called++ },
+		onPickIDE:    func(monitor.RepoState) { called++ },
 	})
 	row.FocusGained()
 	for name, control := range map[string]fyne.CanvasObject{
-		"pull": row.pullBtn, "fresh": row.freshBtn, "IDE": row.ideBtn, "open": row.openBtn,
+		"pull": row.pullBtn, "fresh": row.freshBtn, "IDE": row.ideBtn, "open": row.openBtn, "info": row.infoBtn,
 	} {
 		if control.Visible() {
 			t.Errorf("%s action visible while pulling", name)
@@ -397,7 +478,9 @@ func TestRepoPullingMakesExpandedBranchControlsInert(t *testing.T) {
 		switch control := control.(type) {
 		case *sectionHeader:
 			control.Tapped(nil)
-			control.action.Tapped(nil)
+			if control.action != nil {
+				control.action.Tapped(nil)
+			}
 		case *branchRow:
 			control.act.Tapped(nil)
 			control.copyBtn.Tapped(nil)

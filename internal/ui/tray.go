@@ -76,6 +76,7 @@ func (a *App) rebuildTray() {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Browse Repos...", func() { fyne.Do(a.showWindow) }),
 		fyne.NewMenuItem("Refresh Now", a.refreshFromTray),
+		fyne.NewMenuItem("Git Console...", func() { fyne.Do(a.showGitConsole) }),
 		fyne.NewMenuItem("Settings...", func() { fyne.Do(a.showSettings) }),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Open Config File...", a.openConfigInEditor),

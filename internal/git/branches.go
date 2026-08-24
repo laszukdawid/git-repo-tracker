@@ -65,6 +65,19 @@ type Branch struct {
 	RemoteRef    string // remote-only rows: "refs/remotes/origin/<name>"
 }
 
+// Worktree is one checkout registered in a repository's shared Git directory.
+// Path comes from Git rather than filesystem discovery, so non-standard locations
+// such as IDE-managed worktrees are represented as accurately as .worktrees.
+type Worktree struct {
+	Path     string
+	Head     string
+	Branch   string
+	Detached bool
+	Bare     bool
+	Locked   string
+	Prunable string
+}
+
 // HasUpstream reports whether the branch can be fast-forwarded at all.
 func (b Branch) HasUpstream() bool { return b.Upstream != "" }
 
@@ -104,6 +117,16 @@ func Branches(ctx context.Context, repoPath, remote string) ([]Branch, error) {
 	all := mergeBranches(local, remoteOnly)
 	sortBranches(all)
 	return all, nil
+}
+
+// Worktrees lists every checkout registered for repoPath. Porcelain mode is a
+// stable machine interface; -z preserves paths and reasons containing whitespace.
+func Worktrees(ctx context.Context, repoPath string) ([]Worktree, error) {
+	out, err := run(ctx, readTimeout, repoPath, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	return parseWorktrees(out), nil
 }
 
 // LookupBranch re-reads one branch. Branch operations resolve their target
@@ -481,6 +504,45 @@ func parseLocalBranches(out []byte) []Branch {
 		bs = append(bs, b)
 	}
 	return bs
+}
+
+func parseWorktrees(out []byte) []Worktree {
+	var worktrees []Worktree
+	var current Worktree
+	flush := func() {
+		if current.Path != "" {
+			worktrees = append(worktrees, current)
+		}
+		current = Worktree{}
+	}
+	for _, raw := range strings.Split(string(out), "\x00") {
+		if raw == "" {
+			flush()
+			continue
+		}
+		key, value, _ := strings.Cut(raw, " ")
+		switch key {
+		case "worktree":
+			if current.Path != "" {
+				flush()
+			}
+			current.Path = value
+		case "HEAD":
+			current.Head = value
+		case "branch":
+			current.Branch = strings.TrimPrefix(value, "refs/heads/")
+		case "detached":
+			current.Detached = true
+		case "bare":
+			current.Bare = true
+		case "locked":
+			current.Locked = value
+		case "prunable":
+			current.Prunable = value
+		}
+	}
+	flush()
+	return worktrees
 }
 
 func parseRemoteBranches(out []byte, remote string) []Branch {

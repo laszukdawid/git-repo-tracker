@@ -5,8 +5,148 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+func TestRunRecordsSuccessfulAndFailedCommands(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ClearCommandTraces()
+	t.Cleanup(func() {
+		SetCommandTraceNotify(nil)
+		ClearCommandTraces()
+	})
+
+	dir := t.TempDir()
+	initCmd := exec.Command("git", "init", "-b", "main")
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	notified := 0
+	SetCommandTraceNotify(func() { notified++ })
+	if _, err := run(context.Background(), time.Second, dir, "status", "--short"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), time.Second, dir, "definitely-not-a-command"); err == nil {
+		t.Fatal("invalid git command succeeded")
+	}
+
+	traces := CommandTraces()
+	if len(traces) != 2 {
+		t.Fatalf("trace count = %d, want 2", len(traces))
+	}
+	if notified != 2 {
+		t.Fatalf("notifications = %d, want 2", notified)
+	}
+	if traces[0].RepoPath != dir || traces[0].ExitCode != 0 || traces[0].Duration <= 0 {
+		t.Errorf("successful trace = %+v", traces[0])
+	}
+	line := traces[0].CommandLine()
+	if !strings.Contains(line, Binary()) || !strings.Contains(line, "-C") || !strings.Contains(line, dir) || !strings.Contains(line, "status --short") {
+		t.Errorf("command line does not describe the exact invocation: %q", line)
+	}
+	if traces[1].ExitCode == 0 || strings.TrimSpace(traces[1].Stderr) == "" {
+		t.Errorf("failed trace = %+v", traces[1])
+	}
+}
+
+func TestCommandTraceRedactsCredentials(t *testing.T) {
+	in := "fatal: unable to access 'https://developer:secret@example.com/repo.git?access_token=abc123': Authorization: Bearer xyz789"
+	want := "fatal: unable to access 'https://***@example.com/repo.git?access_token=***': Authorization: Bearer ***"
+	if got := redactTraceText(in); got != want {
+		t.Fatalf("redacted trace = %q, want %q", got, want)
+	}
+}
+
+func TestCommandTraceKeepsOnlyTheNewestEntries(t *testing.T) {
+	ClearCommandTraces()
+	t.Cleanup(ClearCommandTraces)
+	for i := 0; i < commandTraceLimit+5; i++ {
+		recordCommandTrace(CommandTrace{RepoPath: "/repo", Args: []string{"status"}})
+	}
+	traces := CommandTraces()
+	if len(traces) != commandTraceLimit {
+		t.Fatalf("trace count = %d, want %d", len(traces), commandTraceLimit)
+	}
+	if traces[0].ID != 6 {
+		t.Fatalf("oldest retained id = %d, want 6", traces[0].ID)
+	}
+}
+
+func TestCommandTraceAcceptsConcurrentWriters(t *testing.T) {
+	ClearCommandTraces()
+	t.Cleanup(ClearCommandTraces)
+	const writers = 200
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			recordCommandTrace(CommandTrace{RepoPath: "/repo", Args: []string{"status"}})
+		}()
+	}
+	wg.Wait()
+
+	traces := CommandTraces()
+	if len(traces) != writers {
+		t.Fatalf("trace count = %d, want %d", len(traces), writers)
+	}
+	seen := make(map[uint64]bool, writers)
+	for _, trace := range traces {
+		if seen[trace.ID] {
+			t.Fatalf("duplicate trace id %d", trace.ID)
+		}
+		seen[trace.ID] = true
+	}
+}
+
+func TestConfigPathUsesTheSharedRepositoryConfig(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	worktree := filepath.Join(base, "linked worktree")
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull,
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit(base, "init", "-b", "main", repo)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(repo, "add", ".")
+	runGit(repo, "commit", "-m", "initial")
+	runGit(repo, "worktree", "add", "--detach", worktree, "HEAD")
+
+	want := filepath.Join(repo, ".git", "config")
+	if resolved, err := filepath.EvalSymlinks(want); err == nil {
+		want = resolved
+	}
+	for _, path := range []string{repo, worktree} {
+		got, err := ConfigPath(context.Background(), path)
+		if err != nil {
+			t.Fatalf("ConfigPath(%q): %v", path, err)
+		}
+		if got != want {
+			t.Errorf("ConfigPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
 
 func TestParseStatus(t *testing.T) {
 	out := []byte(`# branch.oid abc123

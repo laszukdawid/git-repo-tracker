@@ -224,7 +224,21 @@ func run(ctx context.Context, timeout time.Duration, repoPath string, args ...st
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	started := time.Now()
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		exitCode = -1
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			exitCode = exit.ExitCode()
+		}
+	}
+	recordCommandTrace(CommandTrace{
+		StartedAt: started, Duration: time.Since(started), RepoPath: repoPath,
+		Executable: Binary(), Args: full, ExitCode: exitCode, Stderr: stderr.String(),
+	})
+	if err != nil {
 		code := -1
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
@@ -233,6 +247,25 @@ func run(ctx context.Context, timeout time.Duration, repoPath string, args ...st
 		return nil, &cmdError{Args: args, ExitCode: code, Stderr: stderr.String(), err: err}
 	}
 	return stdout.Bytes(), nil
+}
+
+// ConfigPath resolves the repository-local config file. Git performs the lookup
+// because linked worktrees use a .git file and share config with their primary
+// checkout; joining repoPath with ".git/config" would point at the wrong place.
+func ConfigPath(ctx context.Context, repoPath string) (string, error) {
+	out, err := run(ctx, readTimeout, repoPath,
+		"rev-parse", "--path-format=absolute", "--git-path", "config")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("git returned an empty config path")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(repoPath, path)
+	}
+	return filepath.Clean(path), nil
 }
 
 // cmdError is a failed git invocation, preserved in full.

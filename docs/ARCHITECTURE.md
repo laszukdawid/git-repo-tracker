@@ -67,7 +67,20 @@ We shell out to the user's `git` binary rather than use a pure-Go library, so we
   rows create their local tracking branch in the same worktree operation. The
   scanner prunes nested `.worktrees` directories so app-managed checkouts do not
   enter the repository registry a second time.
+- **Worktree inspection** parses `git worktree list --porcelain -z`, excludes the
+  primary checkout, then reads linked-checkout status through the same bounded
+  worker count used by repository refresh. It is read-only, runs under the
+  repository operation lock, and includes detached, locked, and prunable entries.
 - **`exec.go`** resolves `git` once and augments `PATH` (`/opt/homebrew/bin`, …) plus sets `GIT_TERMINAL_PROMPT=0`, so background fetches fail fast instead of hanging on a credential prompt, even when launched from Finder/launchd.
+- **Command tracing** also lives at that single execution boundary. Every
+  completed invocation contributes an immutable record (executable, redacted
+  argv, repository path, duration, exit code, and redacted stderr) to a
+  process-local ring buffer capped at 500 entries. Stdout and environment values
+  are never retained. A lightweight callback lets the UI repaint the open Git
+  Console without coupling `internal/git` to Fyne.
+- **`ConfigPath`** asks Git for `--git-path config` instead of guessing
+  `<repo>/.git/config`, so the repository Info action resolves both ordinary
+  checkouts and the shared configuration used by linked worktrees correctly.
 
 ## Discovery (`internal/scan`)
 
@@ -75,7 +88,7 @@ We shell out to the user's `git` binary rather than use a pure-Go library, so we
 
 ## Caching (`internal/monitor/cache.go`)
 
-The discovered repos + last-known status are persisted as JSON in the OS cache dir (`~/Library/Caches/git-repo-tracker/state.json`). It's disposable — corrupt or version-mismatched cache is ignored and rebuilt. Writes use a unique `os.CreateTemp` + atomic rename, so the two refresh loops can both persist without clobbering a shared temp file. `BranchList` values are intentionally excluded: they are loaded on demand, become stale when refs move, and stay in UI memory only.
+The discovered repos + last-known status are persisted as JSON in the OS cache dir (`~/Library/Caches/git-repo-tracker/state.json`). It's disposable — corrupt or version-mismatched cache is ignored and rebuilt. Writes use a unique `os.CreateTemp` + atomic rename, so the two refresh loops can both persist without clobbering a shared temp file. `BranchList` and `WorktreeList` values are intentionally excluded: they are loaded on demand, become stale when refs or linked checkouts move, and stay in UI memory only.
 
 ## Config (`internal/config`)
 
@@ -107,13 +120,21 @@ Fyne is great for cross-platform widgets but lacks a few things a menu-bar app w
   only the expanded repository grows through `list.SetItemHeight` for inline
   detail. Action icons are deliberately *not* Hoverable — the row hit-tests the
   pointer so moving onto an icon cannot make the row's hover actions disappear.
-- **Branches and search** (`branches.go`, `branchindex.go`) keep expanded
-  `BranchList` state lazy and UI-owned. A separate bounded background index reads
+- **Worktrees, branches, and search** (`branches.go`, `branchindex.go`) keep
+  expanded `WorktreeList` and `BranchList` state lazy and UI-owned. Linked
+  worktrees render under their canonical repository and are re-read on reopen
+  or explicit refresh. A separate bounded background index reads
   branch names for all repositories when the popover opens, allowing search to
   find branches that were never expanded; ref movement invalidates both views.
 - **Status line** (`statusline.go`) reduces monitor activity and completion
   events to one footer line. Its faster `onActivity` callback avoids rebuilding
   the grouped list for progress-only changes.
+- **Git Console and repository Info** (`app.go`, `browser.go`, `ide.go`,
+  `repo_row.go`) stay on the existing UI → monitor → git boundary. Config-path
+  resolution runs off the main thread, then the chosen editor opens the file;
+  console refreshes marshal the trace callback through `fyne.Do`. The console
+  window owns only its query and display state, while the git layer owns the
+  bounded memory-only records.
 - **Marquee** (`marquee.go`) scrolls overflowing path/commit-message lines on hover by sliding a substring window — since it always renders a *fitting* substring, no clipping is needed.
 - **Tooltips** (`tooltip.go`) are a non-intercepting overlay layered on top of the window content (Fyne 2.7 has no built-in tooltips, and `widget.PopUp` would capture clicks).
 - **Design system** (`tokens.go`, `palettes.go`, `theme.go`) separates geometry

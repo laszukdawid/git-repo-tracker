@@ -89,6 +89,22 @@ func (s *Service) Details(path string) monitor.Details { return s.mgr.Details(pa
 // blocks on git and is not cached, so callers should fetch it lazily.
 func (s *Service) Branches(path string) monitor.BranchList { return s.mgr.Branches(path) }
 
+// Worktrees lists linked checkouts and their local status. It blocks on git and
+// is not cached, so callers should fetch it lazily.
+func (s *Service) Worktrees(path string) monitor.WorktreeList { return s.mgr.Worktrees(path) }
+
+// GitCommands returns the current process's in-memory Git command history.
+func (s *Service) GitCommands() []monitor.GitCommand { return s.mgr.GitCommands() }
+
+// ClearGitCommands removes the current process's Git command history.
+func (s *Service) ClearGitCommands() { s.mgr.ClearGitCommands() }
+
+// SetOnGitCommand installs a callback for live console updates.
+func (s *Service) SetOnGitCommand(fn func()) { s.mgr.SetOnGitCommand(fn) }
+
+// ConfigPath resolves the repository-local Git config file.
+func (s *Service) ConfigPath(path string) (string, error) { return s.mgr.ConfigPath(path) }
+
 // FetchRepo fetches one repository on request, regardless of autoFetch.
 // It reports how many remote-tracking refs the fetch moved.
 func (s *Service) FetchRepo(path string) (int, error) { return s.mgr.FetchRepo(path) }

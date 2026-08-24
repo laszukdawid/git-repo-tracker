@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/dialog"
 
+	"github.com/laszukdawid/git-repo-tracker/internal/config"
 	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui/actions"
 )
 
 // The Branches section: loading it, acting on it, and keeping the popover the
@@ -16,6 +19,65 @@ import (
 
 // branchKey identifies one branch of one repository.
 type branchKey struct{ path, branch string }
+
+func (a *App) worktreeSectionFor(path string) worktreeSectionState {
+	return worktreeSectionState{
+		open: a.worktreeOpen[path], loading: a.worktreeLoading[path],
+		gen: a.worktreeGen[path], list: a.worktrees[path],
+	}
+}
+
+func (a *App) bumpWorktreeGen(path string) { a.worktreeGen[path]++ }
+
+// toggleWorktrees reloads on every reopen. A linked checkout can be added or
+// removed by another terminal without changing the primary repository status,
+// so a long-lived cached list would otherwise quietly lie.
+func (a *App) toggleWorktrees(r monitor.RepoState) {
+	open := !a.worktreeOpen[r.Path]
+	a.worktreeOpen[r.Path] = open
+	if open && !a.worktreeLoading[r.Path] {
+		a.fetchWorktrees(r)
+	}
+	a.bumpWorktreeGen(r.Path)
+	a.reflowExpanded()
+}
+
+func (a *App) refreshWorktrees(r monitor.RepoState) {
+	if !a.worktreeLoading[r.Path] {
+		a.fetchWorktrees(r)
+	}
+}
+
+func (a *App) fetchWorktrees(r monitor.RepoState) {
+	path := r.Path
+	a.worktreeLoading[path] = true
+	a.bumpWorktreeGen(path)
+	go func() {
+		list := a.mgr.Worktrees(path)
+		fyne.Do(func() {
+			delete(a.worktreeLoading, path)
+			a.worktrees[path] = &list
+			a.bumpWorktreeGen(path)
+			if a.expandedPath == path {
+				a.reflowExpanded()
+			}
+		})
+	}()
+}
+
+func (a *App) openWorktreeIDE(worktree monitor.WorktreeInfo) {
+	name := worktree.Branch
+	if worktree.Detached || name == "" {
+		name = "detached"
+	}
+	a.openInIDE(monitor.RepoState{Path: worktree.Path, Name: name, Branch: worktree.Branch})
+}
+
+func (a *App) openWorktreeFolder(worktree monitor.WorktreeInfo) {
+	if err := actions.Run(config.ActionOpenFolder, "", worktree.Path); err != nil {
+		dialog.ShowError(err, a.win)
+	}
+}
 
 // branchSectionFor assembles the section state for one repository. It is the
 // ONLY constructor: listUpdate and the height probe both call it, which is what
@@ -188,8 +250,12 @@ func (a *App) startBranchWorktree(r monitor.RepoState, b monitor.BranchInfo) {
 				a.branchErr[key] = branchErrorMessage(err)
 			} else {
 				delete(a.branches, r.Path)
+				delete(a.worktrees, r.Path)
 				if a.expandedPath == r.Path && a.branchOpen[r.Path] {
 					a.fetchBranches(r)
+				}
+				if a.expandedPath == r.Path && a.worktreeOpen[r.Path] {
+					a.fetchWorktrees(r)
 				}
 				a.openInIDE(monitor.RepoState{Path: worktree, Name: b.Name, Branch: b.Name})
 			}
@@ -253,6 +319,26 @@ func (a *App) invalidateBranchesFor(snapshot []monitor.RepoState) {
 
 // pruneBranchState drops everything belonging to repositories that have gone.
 func (a *App) pruneBranchState(live map[string]bool) {
+	for path := range a.worktrees {
+		if !live[path] {
+			delete(a.worktrees, path)
+		}
+	}
+	for path := range a.worktreeOpen {
+		if !live[path] {
+			delete(a.worktreeOpen, path)
+		}
+	}
+	for path := range a.worktreeLoading {
+		if !live[path] {
+			delete(a.worktreeLoading, path)
+		}
+	}
+	for path := range a.worktreeGen {
+		if !live[path] {
+			delete(a.worktreeGen, path)
+		}
+	}
 	for path := range a.branches {
 		if !live[path] {
 			delete(a.branches, path)
@@ -406,9 +492,11 @@ func branchErrorMessage(err error) string {
 // open that is around twenty widgets and sixty text measurements per character
 // typed. The key covers everything the probe's height depends on.
 type expandedHeightKey struct {
-	path      string
-	detail    *monitor.Details // pointer identity: details are replaced, never mutated
-	branchGen uint64
-	status    *rowStatus
-	loadedAt  time.Time
+	path             string
+	detail           *monitor.Details // pointer identity: details are replaced, never mutated
+	branchGen        uint64
+	worktreeGen      uint64
+	status           *rowStatus
+	branchLoadedAt   time.Time
+	worktreeLoadedAt time.Time
 }
