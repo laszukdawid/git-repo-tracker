@@ -6,11 +6,14 @@ package trayicon
 import (
 	"bytes"
 	"embed"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
+	"runtime"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
@@ -42,9 +45,19 @@ var (
 	white      = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 )
 
-// Resource returns the tray resource for a state: the template glyph for
-// synced/fetching, or a composited coloured PNG carrying an attention marker.
+// Resource returns the tray resource for a state. macOS requires SVG template
+// resources for each state, while other platforms retain coloured PNG alerts.
 func Resource(state State, count int) fyne.Resource {
+	return ResourceForPlatform(runtime.GOOS, state, count)
+}
+
+// ResourceForPlatform returns a tray resource using the renderer for platform.
+// It keeps platform-specific rendering testable without changing the host OS.
+func ResourceForPlatform(platform string, state State, count int) fyne.Resource {
+	if platform == "darwin" {
+		return darwinResource(state, count)
+	}
+
 	switch state {
 	case Behind:
 		return composited(overlay{fill: amber, text: FmtBadge(count), ink: badgeInk})
@@ -57,13 +70,100 @@ func Resource(state State, count int) fyne.Resource {
 	}
 }
 
-// Base returns the themed template tray glyph.
-func Base() fyne.Resource {
-	data, err := trayFS.ReadFile("tray.svg")
-	if err != nil {
+func darwinResource(state State, count int) fyne.Resource {
+	switch state {
+	case Synced:
+		return Base()
+	case Fetching:
+		return themedSVG("tray-fetching.svg", DarwinSVG(state, count))
+	case Behind:
+		badge := FmtBadge(count)
+		return themedSVG("tray-behind-"+badge+".svg", DarwinSVG(state, count))
+	case Dirty:
+		return themedSVG("tray-dirty.svg", DarwinSVG(state, count))
+	case Error:
+		return themedSVG("tray-error.svg", DarwinSVG(state, count))
+	default:
+		return Base()
+	}
+}
+
+// DarwinSVG returns the unthemed SVG used for a macOS tray state. Callers can
+// inspect this source without Fyne's foreground tinting changing its colors.
+func DarwinSVG(state State, count int) []byte {
+	marker := ""
+	switch state {
+	case Behind:
+		marker = darwinBehindMarker(FmtBadge(count))
+	case Dirty:
+		marker = `<circle cx="19.5" cy="4.5" r="1.8" fill="#222222"/>`
+	case Error:
+		marker = `<g fill="#222222"><rect x="18.75" y="2.6" width="1.5" height="4.1" rx="0.7"/><rect x="18.75" y="7.8" width="1.5" height="1.5" rx="0.75"/></g>`
+	}
+	return traySVG(marker)
+}
+
+func themedSVG(name string, data []byte) fyne.Resource {
+	if len(data) == 0 {
 		return theme.BrokenImageIcon()
 	}
-	return theme.NewThemedResource(fyne.NewStaticResource("tray.svg", data))
+	return theme.NewThemedResource(fyne.NewStaticResource(name, data))
+}
+
+func traySVG(marker string) []byte {
+	data, err := trayFS.ReadFile("tray.svg")
+	if err != nil {
+		return nil
+	}
+	if marker != "" {
+		data = bytes.Replace(data, []byte("</svg>"), []byte(marker+"</svg>"), 1)
+	}
+	return data
+}
+
+func darwinBehindMarker(badge string) string {
+	scale := 1.0
+	if len(badge) == 3 {
+		scale = 0.72
+	}
+	textWidth := digitsWidth(badge, scale)
+	const (
+		badgeRight  = 21.7
+		badgeTop    = 2.0
+		badgeHeight = 7.0
+		badgePad    = 1.0
+	)
+	badgeWidth := textWidth + 2*badgePad
+	badgeLeft := badgeRight - badgeWidth
+	textTop := badgeTop + (badgeHeight-5*scale)/2
+	const edge = 0.8
+	return fmt.Sprintf(`<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="#222222"/><rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="#222222"/><rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="#222222"/><rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="#222222"/>%s`, badgeLeft, badgeTop, badgeWidth, edge, badgeLeft, badgeTop+badgeHeight-edge, badgeWidth, edge, badgeLeft, badgeTop, edge, badgeHeight, badgeLeft+badgeWidth-edge, badgeTop, edge, badgeHeight, svgDigits(badge, badgeLeft+badgePad, textTop, scale))
+}
+
+func svgDigits(text string, x, y, scale float64) string {
+	var out strings.Builder
+	cx := x
+	for _, r := range text {
+		glyph, ok := glyphs[r]
+		if !ok {
+			cx += 4 * scale
+			continue
+		}
+		for row := 0; row < 5; row++ {
+			for col := 0; col < 3; col++ {
+				if glyph[row]&(1<<(2-col)) != 0 {
+					fmt.Fprintf(&out, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" fill="#222222"/>`, cx+float64(col)*scale, y+float64(row)*scale, scale, scale)
+				}
+			}
+		}
+		cx += 4 * scale
+	}
+	return out.String()
+}
+
+// Base returns the themed template tray glyph.
+func Base() fyne.Resource {
+	return themedSVG("tray.svg", DarwinSVG(Synced, 0))
 }
 
 func FmtBadge(n int) string {

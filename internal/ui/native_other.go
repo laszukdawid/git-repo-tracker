@@ -25,3 +25,7 @@ func activateApp() {}
 // chooseFolderNative is unavailable off macOS; the false return tells callers to
 // use the Fyne in-app folder dialog instead.
 func chooseFolderNative(initialDir string) (string, bool) { return "", false }
+
+// chooseApplicationNative is unavailable off macOS; callers fall back to the
+// Fyne in-app file dialog.
+func chooseApplicationNative() (string, bool) { return "", false }

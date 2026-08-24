@@ -24,6 +24,9 @@ const (
 	refreshWorkers = 8
 	// notifyDebounce coalesces rapid per-repo updates into one UI rebuild.
 	notifyDebounce = 200 * time.Millisecond
+	// activityDebounce paces progress updates. It is shorter than notifyDebounce
+	// because it only repaints the status line, not the whole list.
+	activityDebounce = 100 * time.Millisecond
 )
 
 // RepoState is a snapshot of one repository's tracked status. It is both the
@@ -41,6 +44,12 @@ type RepoState struct {
 	Modified  int `json:"modified"`
 	Deleted   int `json:"deleted"`
 	Untracked int `json:"untracked"`
+	Conflicts int `json:"conflicts,omitempty"`
+
+	// Operation is the multi-step git operation in progress — "merge", "rebase",
+	// "cherry-pick", "revert", "bisect" — or "". A repository in one has to be
+	// finished or aborted before anything else is worth doing to it.
+	Operation string `json:"operation,omitempty"`
 
 	LinesAdded   int  `json:"linesAdded"`   // lines the repo is behind by
 	LinesDeleted int  `json:"linesDeleted"` // lines removed upstream since fork point
@@ -48,13 +57,30 @@ type RepoState struct {
 
 	LastLocal time.Time `json:"lastLocal"`
 	LastFetch time.Time `json:"lastFetch"`
-	Err       string    `json:"err,omitempty"`      // last local-status error
-	FetchErr  string    `json:"fetchErr,omitempty"` // last fetch error
-	KeepFresh bool      `json:"-"`                  // user opted into automatic fast-forward pulls
+	// LastPull is any successful fast-forward, manual or automatic; LastAutoPull
+	// only the keep-fresh ones. Two fields because the keep-fresh badge reports
+	// specifically when the *automatic* pull last ran, and a manual pull must not
+	// be presented as one.
+	LastPull     time.Time `json:"lastPull"`
+	LastAutoPull time.Time `json:"lastAutoPull"`
+	Err          string    `json:"err,omitempty"`      // last local-status error
+	FetchErr     string    `json:"fetchErr,omitempty"` // last fetch error
+	KeepFresh    bool      `json:"-"`                  // user opted into automatic fast-forward pulls
 }
 
 // Updatable reports whether the repo is behind its remote and worth pulling.
 func (r RepoState) Updatable() bool { return r.Behind > 0 }
+
+// Unsettled reports whether the repository is mid-merge, mid-rebase, or holding
+// unresolved conflicts. It outranks every other state: nothing else about the
+// repository is worth acting on until it is finished or aborted.
+func (r RepoState) Unsettled() bool { return r.Operation != "" || r.Conflicts > 0 }
+
+// NeedsPush reports whether the current branch has commits its upstream does
+// not. It is deliberately separate from Updatable: "you have work to send" and
+// "there is work to fetch" are different jobs, and one icon for both says
+// nothing about either.
+func (r RepoState) NeedsPush() bool { return r.Ahead > 0 && !r.Detached }
 
 // UpdateResult records the outcome of one pull attempted by UpdateAll.
 type UpdateResult struct {
@@ -65,9 +91,13 @@ type UpdateResult struct {
 // Manager owns the repo registry and the refresh schedulers. Safe for
 // concurrent use.
 type Manager struct {
-	cfg      *config.Config
-	onChange func()
-	log      func(string, ...any)
+	cfg        *config.Config
+	onChange   func()
+	onActivity func()
+	log        func(string, ...any)
+
+	// act records what the background loops are doing so the UI can narrate it.
+	act *activityTracker
 
 	mu    sync.RWMutex
 	repos map[string]*RepoState
@@ -75,8 +105,9 @@ type Manager struct {
 	// must never run two mutating git processes in the same working tree.
 	pullLocks sync.Map // map[string]*sync.Mutex
 
-	notifyC chan struct{}
-	trigger chan struct{}
+	notifyC   chan struct{}
+	activityC chan struct{}
+	trigger   chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -94,17 +125,40 @@ func New(cfg *config.Config, onChange func(), logf func(string, ...any)) *Manage
 		logf = func(string, ...any) {}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{
-		cfg:      cfg,
-		onChange: onChange,
-		log:      logf,
-		repos:    loadCache(),
-		notifyC:  make(chan struct{}, 1),
-		trigger:  make(chan struct{}, 1),
-		ctx:      ctx,
-		cancel:   cancel,
+	m := &Manager{
+		cfg:        cfg,
+		onChange:   onChange,
+		onActivity: func() {},
+		log:        logf,
+		act:        newActivityTracker(),
+		repos:      loadCache(),
+		notifyC:    make(chan struct{}, 1),
+		activityC:  make(chan struct{}, 1),
+		trigger:    make(chan struct{}, 1),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
+	m.act.setNotify(m.activityNotify)
+	return m
 }
+
+// SetOnActivity installs the callback fired (debounced) whenever the monitor's
+// progress changes. It is a setter rather than a New parameter so headless
+// callers keep their existing two-argument construction and get no-op behaviour.
+func (m *Manager) SetOnActivity(fn func()) {
+	if fn == nil {
+		fn = func() {}
+	}
+	m.onActivity = fn
+}
+
+// Activity returns what the monitor is doing right now, as a value copy the
+// caller may read from any goroutine.
+func (m *Manager) Activity() Activity { return m.act.snapshot() }
+
+// DrainActivityEvents removes and returns the completions queued since the last
+// call. Completions are announcements, so each is delivered exactly once.
+func (m *Manager) DrainActivityEvents() []ActivityEvent { return m.act.drain() }
 
 // Start kicks off the background loops. It returns immediately; the first paint
 // happens synchronously from the cache.
@@ -236,30 +290,106 @@ func (m *Manager) UpdateAll() []UpdateResult {
 	return results
 }
 
-// Pull fast-forwards a repo to its upstream and refreshes its status. It blocks
-// (it hits the network), so callers should invoke it from a goroutine.
-func (m *Manager) Pull(path string) error {
-	return m.pull(path, false)
-}
+// pullSource says who asked for a pull. It replaces an earlier boolean that
+// doubled as both "re-check whether we're still behind" and "this came from
+// keep-fresh" — conflating the two made it impossible to record honestly
+// whether the last pull was automatic.
+type pullSource int
 
-func (m *Manager) pull(path string, recheckBehind bool) error {
+const (
+	pullManual pullSource = iota
+	pullAuto              // keep-fresh; implies a behind re-check before pulling
+)
+
+// FetchRepo fetches one repository because the user asked for it, then
+// re-reads its status.
+//
+// It deliberately ignores the root's autoFetch setting: that governs the
+// background remote loop, not a click. Without this there is no way to make a
+// branch listing current on a root with autoFetch off — every branch reads as
+// level with its upstream, so no branch offers anything to do, and the section
+// looks like it has no actions at all.
+//
+// It takes the same per-repo lock as a pull, so a fetch and a pull can never
+// overlap on one repository.
+func (m *Manager) FetchRepo(path string) (int, error) {
 	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
 	defer lock.Unlock()
-	if recheckBehind {
+
+	name := filepath.Base(path)
+	op := m.act.begin(ActivityFetching, 1)
+	op.start(name)
+	defer op.end()
+	defer op.finish(name)
+
+	// Snapshot the remote-tracking refs so the caller can say what came in. A
+	// fetch that finds nothing and a fetch that updates forty branches are
+	// indistinguishable otherwise, and "I pressed it and nothing happened" is
+	// exactly what silence looks like.
+	before, _ := git.RemoteRefs(m.ctx, path)
+
+	if err := git.Fetch(m.ctx, path); err != nil {
+		m.update(path, func(r *RepoState) { r.FetchErr = err.Error() })
+		m.notify()
+		return 0, err
+	}
+	after, _ := git.RemoteRefs(m.ctx, path)
+
+	m.update(path, func(r *RepoState) {
+		r.FetchErr = ""
+		r.LastFetch = time.Now()
+	})
+	m.refreshOne(path)
+	m.notify()
+	return git.CountChangedRefs(before, after), nil
+}
+
+// Pull fast-forwards a repo to its upstream and refreshes its status. It blocks
+// (it hits the network), so callers should invoke it from a goroutine.
+func (m *Manager) Pull(path string) error {
+	return m.pull(path, pullManual)
+}
+
+func (m *Manager) pull(path string, src pullSource) error {
+	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	if src == pullAuto {
 		m.refreshOne(path)
 		if !m.canAutoPull(path) {
-			return nil
+			return nil // no longer behind: nothing to announce, nothing to do
 		}
 	}
+
+	// Opened only once the pull is certain to run, so a keep-fresh no-op never
+	// flashes "Pulling" in the status bar.
+	name := filepath.Base(path)
+	op := m.act.begin(ActivityPulling, 1)
+	op.start(name)
+	defer op.end()
+	defer op.finish(name)
+
 	if err := git.Pull(m.ctx, path); err != nil {
 		m.update(path, func(r *RepoState) { r.FetchErr = err.Error() })
+		m.act.post(ActivityEvent{Repo: name, Auto: src == pullAuto, Err: err.Error(), At: time.Now()})
 		m.notify()
 		return err
 	}
-	m.update(path, func(r *RepoState) { r.FetchErr = ""; r.LastFetch = time.Now() })
+	now := time.Now()
+	m.update(path, func(r *RepoState) {
+		r.FetchErr = ""
+		// A pull implies a fetch, so both stamps advance.
+		r.LastFetch = now
+		r.LastPull = now
+		if src == pullAuto {
+			r.LastAutoPull = now
+		}
+	})
 	m.refreshOne(path)
+	m.act.post(ActivityEvent{Repo: name, Auto: src == pullAuto, At: now})
 	m.notify()
 	return nil
 }
@@ -348,7 +478,9 @@ func (m *Manager) localLoop() {
 // discover walks the configured roots and reconciles the registry: new repos are
 // added, repos that vanished are dropped.
 func (m *Manager) discover() {
+	op := m.act.begin(ActivityScanning, 0) // a directory walk has no per-repo unit
 	paths := scan.Discover(m.ctx, m.cfg.RootList(), m.cfg.IgnoreDirs())
+	op.end()
 	// A cancelled walk (e.g. during Stop) returns a partial list; reconciling
 	// against it would wrongly delete repos and then persist that damaged state.
 	if m.ctx.Err() != nil {
@@ -378,6 +510,17 @@ func (m *Manager) refreshAll(withFetch bool) {
 	m.refreshAllWithFetch(withFetch, false)
 }
 
+// fetchForRefresh serializes a scheduled fetch with every repo and branch
+// mutation that uses pullLocks. It releases the lock before keep-fresh calls
+// pull, because pull acquires the same lock for its own mutation.
+func (m *Manager) fetchForRefresh(path string) error {
+	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	return git.Fetch(m.ctx, path)
+}
+
 // refreshAllWithFetch updates every tracked repo. forceFetch makes a
 // user-requested update fetch every repository instead of only auto-fetch roots.
 func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
@@ -393,6 +536,16 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 	fetchSet := m.fetchEligible()
 	keepFresh := m.cfg.KeepFreshRepos()
 
+	// One op owns the counter for the whole pass. The workers only report which
+	// repository they are on; if each kept its own tally, eight of them sharing a
+	// job channel could never produce a coherent "8 of 36".
+	kind := ActivityRefreshing
+	if withFetch {
+		kind = ActivityFetching
+	}
+	op := m.act.begin(kind, len(paths))
+	defer op.end()
+
 	jobs := make(chan string)
 	var wg sync.WaitGroup
 	for i := 0; i < refreshWorkers; i++ {
@@ -403,8 +556,10 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 				if m.ctx.Err() != nil {
 					continue // drain remaining jobs without work
 				}
+				name := filepath.Base(p)
+				op.start(name)
 				if withFetch && (forceFetch || fetchSet[p] || keepFresh[p]) {
-					if err := git.Fetch(m.ctx, p); err != nil {
+					if err := m.fetchForRefresh(p); err != nil {
 						m.update(p, func(r *RepoState) { r.FetchErr = err.Error() })
 					} else {
 						m.update(p, func(r *RepoState) { r.FetchErr = ""; r.LastFetch = time.Now() })
@@ -412,10 +567,11 @@ func (m *Manager) refreshAllWithFetch(withFetch, forceFetch bool) {
 				}
 				m.refreshOne(p)
 				if keepFresh[p] && m.canAutoPull(p) {
-					if err := m.pull(p, true); err != nil {
+					if err := m.pull(p, pullAuto); err != nil {
 						m.log("keep fresh pull %s failed: %v", p, err)
 					}
 				}
+				op.finish(name)
 				m.notify()
 			}
 		}()
@@ -484,6 +640,8 @@ func (m *Manager) refreshOne(path string) {
 		r.Modified = st.Modified
 		r.Deleted = st.Deleted
 		r.Untracked = st.Untracked
+		r.Conflicts = st.Conflicts
+		r.Operation = st.Operation
 		r.LinesAdded = added
 		r.LinesDeleted = deleted
 		r.Dirty = st.Dirty()
@@ -554,17 +712,36 @@ func (m *Manager) notify() {
 	}
 }
 
+// activityNotify signals the debouncer that progress changed. Like notify it is
+// a non-blocking send on a cap-1 channel, which matters more here than it looks:
+// the headless CLI drives the Manager without Start(), so nothing is draining
+// this channel and a blocking send would wedge every refresh and pull.
+func (m *Manager) activityNotify() {
+	select {
+	case m.activityC <- struct{}{}:
+	default:
+	}
+}
+
 // notifier coalesces notify signals: after the first signal it waits one debounce
 // window, then fires a single onChange. This keeps a 70-repo refresh from
 // triggering 70 tray rebuilds.
+// It carries a second, faster timer for progress. The two are kept apart on
+// purpose: onChange drives a full UI rebuild (snapshot, regrouping, list and
+// tray refresh), which is far too heavy to run at the rate progress ticks —
+// while onActivity only repaints one line of text.
 func (m *Manager) notifier() {
 	defer m.wg.Done()
 	timer := time.NewTimer(notifyDebounce)
 	timer.Stop()
-	pending := false
+	actTimer := time.NewTimer(activityDebounce)
+	actTimer.Stop()
+	pending, actPending := false, false
 	for {
 		select {
 		case <-m.ctx.Done():
+			timer.Stop()
+			actTimer.Stop()
 			return
 		case <-m.notifyC:
 			if !pending {
@@ -575,6 +752,16 @@ func (m *Manager) notifier() {
 			if pending {
 				pending = false
 				m.onChange()
+			}
+		case <-m.activityC:
+			if !actPending {
+				actPending = true
+				actTimer.Reset(activityDebounce)
+			}
+		case <-actTimer.C:
+			if actPending {
+				actPending = false
+				m.onActivity()
 			}
 		}
 	}

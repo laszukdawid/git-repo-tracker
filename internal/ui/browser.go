@@ -20,6 +20,7 @@ import (
 
 	"github.com/laszukdawid/git-repo-tracker/internal/config"
 	"github.com/laszukdawid/git-repo-tracker/internal/monitor"
+	"github.com/laszukdawid/git-repo-tracker/internal/ui/actions"
 )
 
 // searchEntry is the popover's search field. It intercepts Escape so the popover
@@ -29,6 +30,10 @@ import (
 type searchEntry struct {
 	widget.Entry
 	onEscape func()
+	// onNav gets first look at every key so the list can be driven from the
+	// keyboard while the entry keeps focus (Up/Down/Return/Tab). It reports
+	// whether it consumed the key; unconsumed keys fall through to the Entry.
+	onNav func(*fyne.KeyEvent) bool
 }
 
 func newSearchEntry(onChanged func(string), onEscape func()) *searchEntry {
@@ -46,7 +51,19 @@ func (e *searchEntry) TypedKey(ev *fyne.KeyEvent) {
 		}
 		return
 	}
+	if e.onNav != nil && e.onNav(ev) {
+		return
+	}
 	e.Entry.TypedKey(ev)
+}
+
+// AcceptsTab keeps Tab inside the entry so it reaches onNav (expand details)
+// instead of triggering focus traversal — the search field is the popover's
+// only focusable control anyway.
+func (e *searchEntry) AcceptsTab() bool { return true }
+
+func newPopoverSearchField(entry *searchEntry) fyne.CanvasObject {
+	return container.NewThemeOverride(entry, searchTheme(entry.Theme()))
 }
 
 // buildPopover constructs the borderless search popover that the tray icon
@@ -91,15 +108,20 @@ func (a *App) buildPopoverContent() {
 	}
 	a.search.OnChanged = func(s string) {
 		a.query = s
+		if strings.TrimSpace(s) != "" {
+			a.ensureBranchIndex()
+		}
 		a.applyFilter()
 	}
+	a.search.onNav = a.handleNavKey
 
 	a.tips = newTooltipLayer(a.pal)
-	updateAllBtn := newTipButton(a.tips, theme.DownloadIcon(), "Update all (pull every repo that's behind)", a.updateAll)
-	settingsBtn := newTipButton(a.tips, theme.SettingsIcon(), "Settings", a.showSettings)
-	a.moreBtn = newTipButton(a.tips, theme.MenuIcon(), "Show/hide filtering header", a.toggleOptions)
-	right := container.NewHBox(updateAllBtn, settingsBtn, a.moreBtn)
-	searchRow := container.NewBorder(nil, nil, nil, right, a.search)
+	a.updateAllBtn = newHeaderButton(a.tips, a.pal, theme.DownloadIcon(),
+		"Update all (pull every repo that's behind)", a.updateAll)
+	settingsBtn := newHeaderButton(a.tips, a.pal, theme.SettingsIcon(), "Settings", a.showSettings)
+	a.moreBtn = newHeaderButton(a.tips, a.pal, theme.MenuIcon(), "Show/hide filtering header", a.toggleOptions)
+	right := container.New(&actionClusterLayout{}, a.updateAllBtn, settingsBtn, a.moreBtn)
+	searchRow := container.New(&searchToolbarLayout{}, newPopoverSearchField(a.search), right)
 
 	// The filter/sort toggles live in a panel below the search row that the ☰ button
 	// expands. It's part of the header, so the popover's height math (which measures
@@ -111,13 +133,20 @@ func (a *App) buildPopoverContent() {
 	// Footer: repo/behind totals on the left, scan-root count on the right (3a).
 	a.footerLeft = canvas.NewText("", a.pal.faint)
 	a.footerLeft.TextStyle = fyne.TextStyle{Monospace: true}
-	a.footerLeft.TextSize = 11.5
+	a.footerLeft.TextSize = textXs
 	a.footerRight = canvas.NewText("", a.pal.faint)
 	a.footerRight.TextStyle = fyne.TextStyle{Monospace: true}
-	a.footerRight.TextSize = 11.5
-	a.footer = container.NewPadded(container.NewHBox(a.footerLeft, layout.NewSpacer(), a.footerRight))
+	a.footerRight.TextSize = textXs
+	// The status bar needs a surface of its own. Without one it is just text over
+	// the backdrop, and a list row scrolled underneath shows straight through it.
+	footerBg := canvas.NewRectangle(a.pal.footerBg)
+	a.footer = container.NewStack(
+		footerBg,
+		container.NewPadded(container.NewHBox(a.footerLeft, layout.NewSpacer(), a.footerRight)),
+	)
 
 	a.list = widget.NewList(a.listLen, a.listCreate, a.listUpdate)
+	a.list.HideSeparators = true
 	// No list.OnSelected: rows handle their own tap (expand) + hover buttons.
 
 	content := container.NewBorder(a.header, a.footer, nil, nil, a.list)
@@ -154,8 +183,113 @@ func (a *App) hidePopover() {
 	if a.optionsPanel != nil {
 		a.optionsPanel.Hide()
 	}
+	a.clearSelection()
 	a.win.Hide()
 	a.popVisible = false
+}
+
+// handleNavKey drives the repo list from the keyboard while the search field
+// keeps focus: Up/Down move the highlight across repo rows (section headers are
+// skipped), Return opens the highlighted repo with the configured click action
+// and dismisses the popover, Tab expands/collapses its detail panel. Left/Right
+// are deliberately left to the entry so the caret still works.
+func (a *App) handleNavKey(ev *fyne.KeyEvent) bool {
+	switch ev.Name {
+	case fyne.KeyDown:
+		a.moveSelection(1)
+	case fyne.KeyUp:
+		a.moveSelection(-1)
+	case fyne.KeyReturn, fyne.KeyEnter:
+		if r, ok := a.selectedRepo(); ok {
+			a.activate(r)
+			a.hidePopover()
+		}
+	case fyne.KeyTab:
+		if r, ok := a.selectedRepo(); ok {
+			a.toggleExpand(r)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+// selectedRepo returns the keyboard-highlighted repo, if any.
+func (a *App) selectedRepo() (monitor.RepoState, bool) {
+	if a.selIdx < 0 || a.selIdx >= len(a.visible) || a.visible[a.selIdx].header {
+		return monitor.RepoState{}, false
+	}
+	return a.visible[a.selIdx].repo, true
+}
+
+// moveSelection steps the highlight by delta over repo rows, skipping group
+// headers and clamping at either end. With no current selection, Down lands on
+// the first repo.
+func (a *App) moveSelection(delta int) {
+	n := len(a.visible)
+	if n == 0 {
+		return
+	}
+	i := a.selIdx
+	for {
+		i += delta
+		if i < 0 || i >= n {
+			return
+		}
+		if !a.visible[i].header {
+			break
+		}
+	}
+	a.setSelection(i)
+}
+
+// setSelection highlights visible[i] (or nothing for -1), repainting only the rows
+// that changed and scrolling the new one into view.
+func (a *App) setSelection(i int) {
+	prev := a.selIdx
+	a.selIdx = i
+	a.selPath = ""
+	if i >= 0 && i < len(a.visible) && !a.visible[i].header {
+		a.selPath = a.visible[i].repo.Path
+	}
+	if a.list == nil {
+		return
+	}
+	if prev >= 0 && prev < len(a.visible) && prev != i {
+		a.list.RefreshItem(prev)
+	}
+	if i >= 0 && i < len(a.visible) {
+		a.list.RefreshItem(i)
+		a.list.ScrollTo(i)
+	}
+}
+
+func (a *App) clearSelection() { a.setSelection(-1) }
+
+// reconcileSelection re-derives selIdx after the visible rows changed: the same
+// repo stays highlighted if it is still listed; otherwise, while a query is
+// active, the first match is highlighted so Return opens it immediately.
+func (a *App) reconcileSelection() {
+	a.selIdx = -1
+	first := -1
+	for i, it := range a.visible {
+		if it.header {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if a.selPath != "" && it.repo.Path == a.selPath {
+			a.selIdx = i
+			return
+		}
+	}
+	if strings.TrimSpace(a.query) != "" && first >= 0 {
+		a.selIdx = first
+		a.selPath = a.visible[first].repo.Path
+		return
+	}
+	a.selPath = ""
 }
 
 // showWindow brings the popover to the front, positioned next to the tray icon,
@@ -169,6 +303,10 @@ func (a *App) showWindow() {
 		a.resizeAnim = nil
 	}
 	a.refresh()
+	// Warm the branch-name index so a search can find a branch in a repository
+	// that has never been expanded. It is a background pass and costs nothing
+	// when everything is already indexed.
+	a.ensureBranchIndex()
 	h := a.desiredPopoverHeight()
 	a.popoverH = h
 	a.win.Resize(fyne.NewSize(popoverWidth, h))
@@ -198,7 +336,41 @@ func (a *App) maybeFollowSystemTheme() {
 func (a *App) listLen() int { return len(a.visible) }
 
 func (a *App) listCreate() fyne.CanvasObject {
-	return newPopoverRow(a.tips, a.pal, a.toggleGroup)
+	row := newPopoverRow(a.tips, a.pal, a.toggleGroup)
+	row.setKeyboardGuard(a.listRowKeyboardActive)
+	return row
+}
+
+func (a *App) listRowKeyboardActive(row *popoverRow) bool {
+	if a.list == nil || !a.list.Visible() || !row.Visible() || !row.active().Visible() {
+		return false
+	}
+	app := fyne.CurrentApp()
+	if app == nil {
+		return false
+	}
+	driver := app.Driver()
+	listCanvas := driver.CanvasForObject(a.list)
+	rowCanvas := driver.CanvasForObject(row)
+	probeCanvas := driver.CanvasForObject(row.attachmentProbe)
+	if listCanvas == nil || rowCanvas == nil || probeCanvas == nil || listCanvas != rowCanvas || listCanvas != probeCanvas {
+		return false
+	}
+	listPos := driver.AbsolutePositionForObject(a.list)
+	rowPos := driver.AbsolutePositionForObject(row)
+	probePos := driver.AbsolutePositionForObject(row.attachmentProbe)
+	listSize, rowSize := a.list.Size(), row.Size()
+	if listSize.Width <= 0 || listSize.Height <= 0 || rowSize.Width <= 0 || rowSize.Height <= 0 {
+		return false
+	}
+	if rowPos == fyne.NewPos(0, 0) && probePos == fyne.NewPos(0, 0) {
+		return false
+	}
+	if rowPos == probePos && row.attachmentProbe.Position() != row.Position() {
+		return false
+	}
+	return rowPos.X+rowSize.Width > listPos.X && rowPos.X < listPos.X+listSize.Width &&
+		rowPos.Y+rowSize.Height > listPos.Y && rowPos.Y < listPos.Y+listSize.Height
 }
 
 func (a *App) listUpdate(id widget.ListItemID, o fyne.CanvasObject) {
@@ -208,13 +380,99 @@ func (a *App) listUpdate(id widget.ListItemID, o fyne.CanvasObject) {
 	it := a.visible[id]
 	row := o.(*popoverRow)
 	if it.header {
-		row.Configure(it, false, false, nil, nil, nil, nil, nil)
+		row.Configure(it, rowState{}, rowActions{})
 	} else {
-		p := it.repo.Path
-		row.Configure(it, a.expandedPath == p, a.pulling[p], a.details[p],
-			a.toggleExpand, a.pullRepo, a.toggleKeepFresh, a.activate)
+		row.Configure(it, a.rowStateFor(it.repo.Path, id), a.rowActions())
+		row.repo.openBtn.setPresentation(a.repoOpenPresentation())
 	}
 	a.list.SetItemHeight(id, row.MinSize().Height)
+}
+
+func (a *App) repoOpenPresentation() (fyne.Resource, string) {
+	action, _ := a.cfg.Click()
+	switch action {
+	case config.ActionTerminal:
+		if runtime.GOOS == "windows" {
+			return theme.ComputerIcon(), "Open in Command Prompt"
+		}
+		return theme.ComputerIcon(), "Open in Terminal"
+	case config.ActionEditor:
+		args, fallback := actions.ResolveEditorCommand("")
+		if fallback {
+			return theme.FileApplicationIcon(), "Open with " + args[0] + " (fallback)"
+		}
+		choice := a.currentIDE()
+		if choice.set {
+			return theme.FileApplicationIcon(), "Open with " + choice.editor.Name
+		}
+		return theme.FileApplicationIcon(), "Open with " + args[0]
+	case config.ActionCustom:
+		return theme.FileApplicationIcon(), "Run custom action"
+	default:
+		switch runtime.GOOS {
+		case "darwin":
+			return theme.FolderOpenIcon(), "Open in Finder"
+		case "windows":
+			return theme.FolderOpenIcon(), "Open in File Explorer"
+		default:
+			return theme.FolderOpenIcon(), "Open folder"
+		}
+	}
+}
+
+// rowStateFor assembles everything a repo row renders from. It is the single
+// place that reads App state into a row, so the throwaway probe used to measure
+// row heights and the real row can never disagree about what they are showing.
+// visIdx is the row's index in the visible slice, or -1 when measuring.
+func (a *App) rowStateFor(path string, visIdx int) rowState {
+	st := rowState{
+		expanded: a.expandedPath == path,
+		status:   a.rowStatus[path],
+		detail:   a.details[path],
+		selected: visIdx >= 0 && visIdx == a.selIdx,
+		match:    a.matchHint[path],
+	}
+	if st.expanded {
+		st.worktrees = a.worktreeSectionFor(path)
+		st.branches = a.branchSectionFor(path)
+	}
+	// Every row shows the same editor, so it is resolved once per paint rather
+	// than per row — which also means one existence check, not thirty-six.
+	if a.ideCacheGen != a.ideGen {
+		c := a.currentIDE()
+		open, change := ideTooltips(c)
+		a.ideCached = rowState{ideIcon: a.ideIcon(c), ideTip: open, ideAltTip: change, ideMissing: c.missing}
+		a.ideCacheGen = a.ideGen
+	}
+	st.ideIcon, st.ideTip = a.ideCached.ideIcon, a.ideCached.ideTip
+	st.ideAltTip, st.ideMissing = a.ideCached.ideAltTip, a.ideCached.ideMissing
+	return st
+}
+
+func (a *App) rowActions() rowActions {
+	return rowActions{
+		onExpand: a.toggleExpand,
+		onPull:   a.pullRepo,
+		onFresh:  a.toggleKeepFresh,
+		onOpen:   a.activate,
+
+		onOpenIDE:            a.openInIDE,
+		onPickIDE:            a.pickIDE,
+		onOpenConfig:         a.openRepoConfigInIDE,
+		onToggleWorktrees:    a.toggleWorktrees,
+		onRefreshWorktrees:   a.refreshWorktrees,
+		onOpenWorktreeIDE:    a.openWorktreeIDE,
+		onOpenWorktreeFolder: a.openWorktreeFolder,
+
+		onToggleBranches: a.toggleBranches,
+		onPullBranch:     a.startBranchSync,
+		onTrackBranch:    a.startTrackBranch,
+		onOpenBranch:     a.startBranchWorktree,
+		onDismissBranch:  a.dismissBranchError,
+		onFetchRepo:      a.fetchRepoNow,
+		onMoreBranches:   a.showMoreBranches,
+		onCopyBranch:     a.copyBranchName,
+	}
 }
 
 func (a *App) toggleKeepFresh(r monitor.RepoState) {
@@ -264,52 +522,73 @@ func (a *App) fetchDetails(r monitor.RepoState) {
 	}()
 }
 
-// pullRepo fast-forwards a single repo, showing a spinner on its row and a
-// dialog if it fails (e.g. a diverged branch).
+// pullRepo fast-forwards a single repo. A second click while the first pull is
+// still running is ignored — the row already says "Pulling…", and repeating the
+// request would only queue redundant git processes.
 func (a *App) pullRepo(r monitor.RepoState) {
-	if a.pulling[r.Path] {
+	if a.rowStatus[r.Path].pulling() {
 		return
 	}
-	a.pulling[r.Path] = true
-	a.applyFilter()
-	a.startPull(r, true)
+	a.setRowStatus(r.Path, &rowStatus{phase: rowPulling, msg: "Pulling…"})
+	a.startPull(r)
 }
 
-// updateAll fast-forwards every repo that is behind its origin. Per-repo spinners
-// show progress; errors are left as the row's ⚠ marker rather than a dialog flood.
+// updateAll fast-forwards every repo that is behind its origin. Errors stay on
+// their own row rather than raising a dialog per failure.
 func (a *App) updateAll() {
 	var targets []monitor.RepoState
 	for _, r := range a.all {
-		if r.Behind > 0 && !a.pulling[r.Path] {
-			a.pulling[r.Path] = true
+		if r.Behind > 0 && !a.rowStatus[r.Path].pulling() {
+			a.rowStatus[r.Path] = &rowStatus{phase: rowPulling, msg: "Pulling…"}
 			targets = append(targets, r)
 		}
 	}
 	if len(targets) == 0 {
 		return
 	}
-	a.applyFilter() // show all the spinners at once
+	a.rearmExpiry()
+	a.applyFilter() // mark every target at once
 	for _, r := range targets {
-		a.startPull(r, false)
+		a.startPull(r)
 	}
 }
 
-// startPull runs the pull in the background (the repo is already marked pulling).
-func (a *App) startPull(r monitor.RepoState, showErr bool) {
+// startPull runs the pull in the background (the repo is already marked pulling)
+// and leaves the outcome on the row for a few seconds, so a pull that finishes
+// in 200ms still leaves visible evidence that it happened.
+func (a *App) startPull(r monitor.RepoState) {
 	go func() {
 		err := a.mgr.Pull(r.Path)
 		fyne.Do(func() {
-			delete(a.pulling, r.Path)
-			delete(a.details, r.Path) // stale after a successful pull
-			if err != nil && showErr {
-				dialog.ShowError(err, a.win)
+			st := &rowStatus{phase: rowPulled, msg: "Pulled · just now", expires: time.Now().Add(transientHold)}
+			if err != nil {
+				st = &rowStatus{phase: rowPullFailed, msg: pullFailureNote(err), expires: time.Now().Add(transientHold)}
 			}
+			a.rowStatus[r.Path] = st
+			a.rearmExpiry()
+			delete(a.details, r.Path) // stale after a successful pull
 			if a.expandedPath == r.Path {
 				a.fetchDetails(r)
 			}
 			a.refresh()
 		})
 	}()
+}
+
+// pullFailureNote condenses a git error into something that fits the branch
+// slot. The full text stays available in the row's tooltip and its error glyph.
+func pullFailureNote(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "diverging"):
+		return "Pull failed · diverged"
+	case strings.Contains(msg, "would be overwritten"):
+		return "Pull failed · local changes"
+	case strings.Contains(msg, "Could not resolve host") || strings.Contains(msg, "Could not read from remote"):
+		return "Pull failed · no connection"
+	default:
+		return "Pull failed"
+	}
 }
 
 // commitMeta renders the short hash and a relative committed time, e.g.
@@ -344,6 +623,10 @@ func humanizeTime(t time.Time) string {
 // footer. Grouping (option 3a) turns the flat list into collapsible sections.
 func (a *App) applyFilter() {
 	q := strings.ToLower(strings.TrimSpace(a.query))
+	if a.matchHint == nil {
+		a.matchHint = map[string]string{}
+	}
+	clear(a.matchHint)
 	out := make([]monitor.RepoState, 0, len(a.all))
 	for _, r := range a.all {
 		switch a.filter {
@@ -356,19 +639,78 @@ func (a *App) applyFilter() {
 				continue
 			}
 		}
-		if q != "" && !strings.Contains(strings.ToLower(r.Name), q) &&
-			!strings.Contains(strings.ToLower(r.Branch), q) {
-			continue
+		if q != "" {
+			hit, ok := matchQuery(r, q, a.bindex.get(r.Path))
+			if !ok {
+				continue
+			}
+			// Record the branch that brought this repository in, if that is what
+			// did. Searching "v3" and being shown a row reading "v2" looks like a
+			// broken search until the row says which branch matched.
+			if hit != "" {
+				a.matchHint[r.Path] = hit
+			}
 		}
 		out = append(out, r)
 	}
 
 	a.visible, a.groupCount = a.groupItems(out)
+	a.reconcileSelection()
 	if a.list != nil {
 		a.list.Refresh()
 	}
 	a.updateFooter()
 	a.resizePopoverToContent()
+}
+
+// matchQuery reports whether a repo matches a lower-cased search term, and if a
+// branch is what matched, which one.
+//
+// Every space-separated word must match the repository's name, its current
+// branch, its (home-abbreviated) path, or ANY of its branches — so "www sw67"
+// narrows to repos under a folder containing both, a parent-folder name finds
+// repos the bare repo name would not, and a branch name finds the repository
+// holding it without having opened anything.
+//
+// The returned name is the first branch that matched a word the repository's own
+// text did not. It is empty when the repository matched on its own name, path or
+// current branch, which is the case that needs no explaining.
+//
+// branches is the indexed set of that repository's branch names; it may be nil
+// while the index is still being built, in which case only the current branch is
+// searchable for that repository.
+func matchQuery(r monitor.RepoState, q string, branches []string) (string, bool) {
+	hay := strings.ToLower(r.Name + "\x00" + r.Branch + "\x00" + collapseHome(r.Path))
+	hit := ""
+	for _, word := range strings.Fields(q) {
+		if strings.Contains(hay, word) {
+			continue
+		}
+		name := findBranch(branches, word)
+		if name == "" {
+			return "", false
+		}
+		if hit == "" {
+			hit = name
+		}
+	}
+	return hit, true
+}
+
+// matchesQuery is the plain yes/no form, kept for callers that do not care why.
+func matchesQuery(r monitor.RepoState, q string, branches []string) bool {
+	_, ok := matchQuery(r, q, branches)
+	return ok
+}
+
+// findBranch returns the first indexed branch name containing term, or "".
+func findBranch(branches []string, term string) string {
+	for _, name := range branches {
+		if strings.Contains(name, term) {
+			return name
+		}
+	}
+	return ""
 }
 
 // groupItems buckets repos by their scan root and flattens them into the list's
@@ -573,7 +915,9 @@ func (a *App) listContentHeight() float32 {
 		case a.expandedPath != "" && it.repo.Path == a.expandedPath:
 			total += a.expandedRowHeight(it.repo)
 		default:
-			total += a.collapsedRowHeightFor(it.repo)
+			// Every collapsed repo row is the same height, so one memoised probe
+			// answers for all of them — no per-row measuring per keystroke.
+			total += a.collapsedRowHeight()
 		}
 	}
 	return total + theme.Padding()*float32(n-1)
@@ -590,36 +934,11 @@ func (a *App) probeRow() *popoverRow { return newPopoverRow(a.tips, a.pal, nil) 
 func (a *App) collapsedRowHeight() float32 {
 	if a.collapsedRow == 0 {
 		probe := a.probeRow()
-		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag"}}, false, false, nil, nil, nil, nil, nil)
+		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag"}}, rowState{}, rowActions{})
 		a.collapsedRow = probe.MinSize().Height
 		probe.repo.clearMarquees()
 	}
 	return a.collapsedRow
-}
-
-// collapsedRowTwoLineHeight is the height of a collapsed repo row whose branch has
-// wrapped onto a second line under the name. Like collapsedRowHeight it's constant
-// for the theme, so it's measured once via a throwaway probe and memoised.
-func (a *App) collapsedRowTwoLineHeight() float32 {
-	if a.collapsedRow2 == 0 {
-		probe := a.probeRow()
-		probe.Configure(popoverItem{repo: monitor.RepoState{Name: "Ag", Branch: "main"}}, false, false, nil, nil, nil, nil, nil)
-		probe.repo.twoLine = true // force the wrapped layout so MinSize includes the branch line
-		a.collapsedRow2 = probe.MinSize().Height
-		probe.repo.clearMarquees()
-	}
-	return a.collapsedRow2
-}
-
-// collapsedRowHeightFor returns the collapsed height a repo row will take, picking
-// the taller two-line height when its name + branch won't fit on one line. It uses
-// the same wrap test as the row itself so the popover's height estimate matches what
-// listUpdate sets per row.
-func (a *App) collapsedRowHeightFor(repo monitor.RepoState) float32 {
-	if titleWraps(repo.Name, branchLabel(repo.Branch), availTitleWidth(estRowWidth())) {
-		return a.collapsedRowTwoLineHeight()
-	}
-	return a.collapsedRowHeight()
 }
 
 // groupHeaderHeight is the constant height of a scan-root section header, memoised
@@ -627,7 +946,7 @@ func (a *App) collapsedRowHeightFor(repo monitor.RepoState) float32 {
 func (a *App) groupHeaderHeight() float32 {
 	if a.groupRowH == 0 {
 		probe := a.probeRow()
-		probe.Configure(popoverItem{header: true, root: "~/x", count: 1}, false, false, nil, nil, nil, nil, nil)
+		probe.Configure(popoverItem{header: true, root: "~/x", count: 1}, rowState{}, rowActions{})
 		a.groupRowH = probe.MinSize().Height
 	}
 	return a.groupRowH
@@ -638,10 +957,27 @@ func (a *App) groupHeaderHeight() float32 {
 // the throwaway probe never starts the spinner animation; any marquees it builds are
 // cleared immediately.
 func (a *App) expandedRowHeight(r monitor.RepoState) float32 {
+	st := a.rowStateFor(r.Path, -1)
+	st.expanded = true
+	key := expandedHeightKey{
+		path: r.Path, detail: st.detail, branchGen: a.branchGen[r.Path],
+		worktreeGen: a.worktreeGen[r.Path], status: st.status,
+	}
+	if bl := a.branches[r.Path]; bl != nil {
+		key.branchLoadedAt = bl.LoadedAt
+	}
+	if wl := a.worktrees[r.Path]; wl != nil {
+		key.worktreeLoadedAt = wl.LoadedAt
+	}
+	if a.expandedH > 0 && a.expandedKey == key {
+		return a.expandedH
+	}
+
 	probe := a.probeRow()
-	probe.Configure(popoverItem{repo: r}, true, false, a.details[r.Path], nil, nil, nil, nil)
+	probe.Configure(popoverItem{repo: r}, st, rowActions{})
 	h := probe.MinSize().Height
 	probe.repo.clearMarquees()
+	a.expandedKey, a.expandedH = key, h
 	return h
 }
 
@@ -652,12 +988,35 @@ func (a *App) updateFooter() {
 		return
 	}
 	total, behind := a.mgr.Counts()
-	a.footerLeft.Text = fmt.Sprintf("%d repos · %d behind", total, behind)
 	roots := "roots"
 	if a.groupCount == 1 {
 		roots = "root"
 	}
 	a.footerRight.Text = fmt.Sprintf("%d %s", a.groupCount, roots)
+	if _, ok := a.selectedRepo(); ok {
+		// While a row is keyboard-highlighted, teach the shortcuts in place of the
+		// root count — the hint appears exactly when it is actionable.
+		a.footerRight.Text = "⏎ open · ⇥ details · esc close"
+	}
+
+	// Update-all goes inert while any pull is running, so the button matches the
+	// rows: nothing invites a second click on work already in progress.
+	if a.updateAllBtn != nil {
+		a.updateAllBtn.setDisabled(a.anyPulling())
+	}
+
+	// The left slot narrates background work. Truncate it: an HBox gives each
+	// child its MinSize, so a long repo name would otherwise push the right-hand
+	// text off the popover's edge. The counter leads, so it survives truncation.
+	line := statusLine(a.act, a.transient, total, behind)
+	rightW := fyne.MeasureText(a.footerRight.Text, a.footerRight.TextSize, a.footerRight.TextStyle).Width
+	avail := popoverWidth - 4*theme.Padding() - rightW - 12
+	a.footerLeft.Text = truncateToWidth(line, avail, a.footerLeft.TextSize, a.footerLeft.TextStyle)
+	if a.transient != "" && strings.Contains(a.transient, "fail") {
+		a.footerLeft.Color = a.pal.statusError
+	} else {
+		a.footerLeft.Color = a.pal.faint
+	}
 	a.footerLeft.Refresh()
 	a.footerRight.Refresh()
 }
@@ -695,19 +1054,101 @@ func (a *App) buildOptionsPanel() *fyne.Container {
 		{label: "Name", icon: theme.ListIcon()},
 		{label: "Outdated", icon: theme.HistoryIcon()},
 	}, int(a.sort), func(i int) { a.sort = sortMode(i); a.applyFilter() })
-	actions := container.NewHBox(
-		widget.NewButton("Refresh", func() { a.mgr.Refresh() }),
-		widget.NewButton("Open Config", a.openConfigInEditor),
-		widget.NewButton("Reload", a.reloadConfig),
-		widget.NewButton("Quit", a.quit),
+	// These are segChips, not widget.Buttons. A stock button carries the theme's
+	// full text size and padding, which made this row tower over the filter chips
+	// directly above it — the same panel in two different scales.
+	repoActions := container.New(&actionClusterLayout{},
+		newActionChip(a.pal, "Refresh", theme.ViewRefreshIcon(), func() { a.mgr.Refresh() }),
+		newActionChip(a.pal, "Git Console", theme.ComputerIcon(), a.showGitConsole),
+		newActionChip(a.pal, "Open Config", theme.DocumentIcon(), a.openConfigInEditor),
+	)
+	appActions := container.New(&actionClusterLayout{},
+		newActionChip(a.pal, "Reload", theme.HistoryIcon(), a.reloadConfig),
+		newActionChip(a.pal, "Quit", theme.LogoutIcon(), a.quit),
 	)
 
 	return container.NewVBox(
 		container.NewHBox(a.optLabel("Show"), filter),
 		container.NewHBox(a.optLabel("Sort"), sortG),
-		container.NewHBox(a.optLabel("Actions"), actions),
+		container.NewHBox(a.optLabel("Actions"), repoActions),
+		container.NewHBox(a.optLabel("App"), appActions),
 		widget.NewSeparator(), // thin rule between the filtering header and the repos
 	)
+}
+
+// showGitConsole opens the process-local Git command trace. The monitor owns the
+// bounded buffer; this window only formats and filters its current snapshot.
+func (a *App) showGitConsole() {
+	if a.gitConsoleWin != nil {
+		a.refreshGitConsole()
+		a.gitConsoleWin.Show()
+		a.gitConsoleWin.RequestFocus()
+		return
+	}
+
+	w := a.fyneApp.NewWindow("git-repo-tracker — Git Console")
+	a.gitConsoleWin = w
+	a.gitConsoleAuto = true
+
+	search := widget.NewEntry()
+	search.SetPlaceHolder("Filter repository, command, or error…")
+	search.OnChanged = func(query string) {
+		a.gitConsoleQuery = query
+		a.refreshGitConsole()
+	}
+
+	a.gitConsoleText = widget.NewTextGrid()
+	a.gitConsoleText.ShowLineNumbers = false
+	a.gitConsoleCount = widget.NewLabel("")
+
+	copyAll := widget.NewButtonWithIcon("Copy all", theme.ContentCopyIcon(), func() {
+		if a.gitConsoleText == nil {
+			return
+		}
+		w.Clipboard().SetContent(formatGitCommands(filterGitCommands(a.mgr.GitCommands(), a.gitConsoleQuery)))
+	})
+	clearAll := widget.NewButtonWithIcon("Clear", theme.DeleteIcon(), func() {
+		a.mgr.ClearGitCommands()
+		a.refreshGitConsole()
+	})
+	autoScroll := widget.NewCheck("Auto-scroll", func(enabled bool) {
+		a.gitConsoleAuto = enabled
+		if enabled && a.gitConsoleText != nil {
+			a.gitConsoleText.ScrollToBottom()
+		}
+	})
+	autoScroll.SetChecked(true)
+
+	toolbar := container.NewBorder(nil, nil,
+		container.NewHBox(copyAll, clearAll, autoScroll), a.gitConsoleCount, search)
+	w.SetContent(container.NewBorder(toolbar, nil, nil, nil, a.gitConsoleText))
+	w.Resize(fyne.NewSize(780, 520))
+	w.SetOnClosed(func() {
+		a.gitConsoleWin = nil
+		a.gitConsoleText = nil
+		a.gitConsoleCount = nil
+		a.gitConsoleQuery = ""
+	})
+	a.refreshGitConsole()
+	w.Show()
+	w.RequestFocus()
+}
+
+// refreshGitConsole runs only on Fyne's main thread. A fresh immutable snapshot
+// makes filtering independent from concurrent Git activity.
+func (a *App) refreshGitConsole() {
+	if a.gitConsoleText == nil {
+		return
+	}
+	commands := a.mgr.GitCommands()
+	filtered := filterGitCommands(commands, a.gitConsoleQuery)
+	a.gitConsoleText.SetText(formatGitCommands(filtered))
+	if a.gitConsoleCount != nil {
+		a.gitConsoleCount.SetText(fmt.Sprintf("%d shown · %d total", len(filtered), len(commands)))
+	}
+	if a.gitConsoleAuto {
+		a.gitConsoleText.ScrollToBottom()
+	}
 }
 
 // optLabel is a small bold caption ("Show"/"Sort"), vertically centred so it lines

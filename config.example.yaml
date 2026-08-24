@@ -46,3 +46,18 @@ customCommand: ""   # e.g. "code {path}"
 
 # Start the app automatically when you log in (macOS LaunchAgent / Linux autostart).
 launchAtLogin: false
+
+# Appearance. theme picks light or dark (or follows the OS); palette picks the
+# colour family, so the two together give six themes.
+#   theme:   system | light | dark
+#   palette: slate  — names neutral, colour only on status and controls
+#            ink    — warm paper/charcoal ground, one gold accent
+#            signal — greyscale with a single colour, used only where you must act
+theme: system
+palette: slate
+
+# The editor the row's editor chip opens repositories with. Set through the chip
+# rather than by hand; a .app path on macOS, or "cmd:code" for a launcher on PATH.
+# extraIDEs holds editors added through Browse... that the scan would not find.
+ide: ""
+extraIDEs: []

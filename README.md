@@ -1,9 +1,10 @@
 # git-repo-tracker
 
 A fast, cross-platform **system-tray app that watches your local git repositories**.
-It discovers repos under directories you configure, periodically checks how far
-each branch is behind its `origin`, and surfaces the results in the menu bar plus
-a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ).
+It discovers repos under directories you configure, periodically checks how
+repositories and branches stand against their configured upstreams, and surfaces
+the results in the menu bar plus a searchable popover — inspired by
+[RepoZ](https://github.com/awaescher/RepoZ).
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="git-repo-tracker in action" width="440">
@@ -22,9 +23,48 @@ a searchable popover — inspired by [RepoZ](https://github.com/awaescher/RepoZ)
 - **Search popover** — left-click the tray icon for a borderless popover with a
   search field and a virtualized list (sort by name / most-behind; filter all /
   updatable / dirty).
+- **A status mark that says which state** — one glyph per repo, answering where
+  it stands against its remote: **↓ pull**, **↑ push**, **↓↑ diverged**,
+  **⚠ mid-merge/rebase or conflicts**, **✓ settled**. Uncommitted changes are a
+  separate dot beside the name, so "twelve commits behind" and "I have local
+  edits" are shown as the two different facts they are.
 - **Inline detail** — click a repo to expand its path and the latest local/origin
   commit times; hover to reveal **pull** or **keep fresh**, plus **open**.
 - **Update all** — one button fast-forwards every repo that's behind.
+- **Open in your editor** — the row carries a chip with your editor's own icon.
+  It finds what is installed (JetBrains, VS Code, Cursor, Zed, Xcode, …), remembers
+  your choice, and re-checks each time that the editor is still there. The row's
+  **Info** action resolves that checkout's real local Git config and opens the
+  file in the same editor, including the shared config of a linked worktree.
+- **Git Console** — inspect the exact Git executable, arguments, repository,
+  duration, exit code, and redacted stderr for this app session. Search, copy,
+  clear, and auto-scroll are built in; the bounded history is memory-only and
+  never stores command stdout or process environment values.
+- **Per-branch sync and worktrees** — expand a repo to list its branches. One
+  two-way sync control fetches first and then does whatever that branch needs:
+  fast-forward when it is behind, **push** when it is ahead, merge its upstream
+  in when it has diverged. Nothing is ever forced, and nothing is pushed unless
+  you press the control.
+  A branch you are not standing on fast-forwards **without a checkout** — your
+  working tree and `HEAD` stay where they are. A branch checked out in a **linked
+  worktree** is updated there, exactly as pulling in that worktree by hand would,
+  and is refused if the update would overwrite uncommitted changes. A diverged
+  branch that is checked out nowhere says so: a merge needs a working tree.
+  The editor control opens the checkout that already holds a branch. If there is
+  none, it creates one under
+  `<repo-parent>/.worktrees/<repo-name>/<branch-name>` and opens that worktree in
+  the selected editor. Remote-only rows create a tracking branch as part of the
+  same operation.
+  Branches with something to pull are listed first, then the rest of your local
+  branches (newest first), then the remote-only ones; a repo with hundreds of
+  branches pages them in rather than listing them all, and the section header
+  reports how many are behind.
+- **Linked worktree overview** — the expanded repository has a lazy **Worktrees**
+  section before its branch list. It shows every linked checkout (including
+  detached HEADs), its local dirty/ahead/behind or operation state, and its path.
+  Open a checkout directly in the selected editor or reveal it in the platform
+  file manager. The primary checkout remains the one top-level repository, so
+  status, fetches, and counts are never duplicated.
 - **Keep fresh** — opt a synced repo into safe automatic fast-forward pulls when
   a later refresh finds remote commits.
 - **In-app settings** — manage roots, intervals, the open action, and
@@ -57,8 +97,10 @@ opens without an "unidentified developer" prompt (no Apple notarization needed).
 
 ### From source
 
-Requires **Go 1.26+** and `git` on your `PATH`. On Debian/Ubuntu install the Fyne
-build dependencies first with `task linux-deps`.
+Requires **Go 1.26+** and **Git 2.34+** on your `PATH`. Git 2.34 is the minimum
+because branch updates pass `--no-auto-maintenance`; background fetches also use
+`--no-write-fetch-head`, which was added in Git 2.29. On Debian/Ubuntu install
+the Fyne build dependencies first with `task linux-deps`.
 
 ```sh
 task run     # or: go run ./cmd/git-repo-tracker
@@ -82,13 +124,39 @@ The app lives in the menu bar / system tray — it has no main window.
   <img src="docs/media/linux-native-tray.svg" alt="Ubuntu native tray menu" width="360">
 </p>
 
+### What the mark next to a repo means
+
+| Mark | State | What to do |
+|------|-------|------------|
+| **↓** | behind its upstream | pull |
+| **↑** | ahead of its upstream | push |
+| **↓↑** | diverged — commits on both sides | use branch sync to merge when it is checked out; otherwise check it out and merge or rebase |
+| **⚠** | mid-merge, mid-rebase, or unresolved conflicts | finish it or abort it; nothing else applies until then |
+| **!** | the last fetch or status failed | read the message in the row's detail |
+| **✓** | level with its upstream, nothing local | nothing |
+| **•** *(beside the name)* | uncommitted changes | independent of the mark above — a repo can be behind **and** dirty |
+
+Hovering any row spells all of it out in words, including how long ago it was
+fetched and pulled.
+
 | Action | Result |
 |--------|--------|
 | **Left-click** the tray icon | Open/close the search popover |
 | **Right-click** the tray icon | Native menu. Linux shows outdated repos plus **Open App**. |
-| Type in the search box | Live-filter by name or branch |
-| **Click a repo row** | Expand inline detail (path + latest commit times) |
-| **Hover a row** | Reveal **⬇ pull** when behind or **↻ keep fresh** when synced, plus **📂 open** |
+| Type in the search box | Live-filter by name, path, current branch **or any branch** — every word must match (`www sw67`). A repo found by a branch you cannot see says which one: `v2 · matched origin/v3-rewrite` |
+| `↑` / `↓` | Move the keyboard highlight across repos (section headers are skipped); typing pre-selects the first match |
+| `⏎` | Open the highlighted repo with the configured click action and close the popover |
+| `⇥` | Expand / collapse the highlighted repo's inline detail |
+| **Click a repo row, or its ▸ chevron** | Expand inline detail (path + latest commit times + **Worktrees** + **Branches**) |
+| **Worktrees (N)** in the detail | Lazily list linked checkouts and their branch/detached, dirty, ahead/behind, conflict, or in-progress state |
+| **Worktree controls** | Open that checkout in the selected editor or reveal it in the platform file manager; refresh from the section header |
+| **Branches (N)** in the detail | List every local branch plus the remote-only ones; pull any of them, or create a local branch from a remote one |
+| **↻ beside Branches (N)** | Fetch just this repo, on demand — this is what makes each branch's ahead/behind current, and it works even on a root with `autoFetch: false` |
+| **Branch controls** | Always shown, no hover needed. **↓↑ sync** fetches and then pulls, pushes, or merges according to the branch's current state. The editor control opens its existing worktree or creates one beside the repo first. **+ create local** remains available when the branch exists only on the remote; **⧉ copy** copies the name. |
+| **Show N more** under the list | Reveal another page of branches |
+| **Hover a row** | Reveal **⬇ pull** when behind or **↻ keep fresh** when synced, plus **open in editor**, **open folder**, and **Info** to edit that repository's local Git config in the selected editor |
+| **Editor chip** | Opens the repo in your editor; its corner chevron changes which editor |
+| **Git Console** in Actions or the tray menu | Show the searchable, memory-only history of exact Git commands, results, duration, and redacted stderr |
 | **⬇ in the header** | Update all — pull every repo that's behind |
 | **☰ in the header** | Sort / filter / Settings |
 | `Esc` | Dismiss the popover |
@@ -115,6 +183,7 @@ See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full reference
 - **[Architecture](docs/ARCHITECTURE.md)** — layering, concurrency, caching, the Fyne/cgo internals.
 - **[GNOME extension development](docs/GNOME_EXTENSION.md)** — optional Ubuntu/Fedora integration.
 - **[Release checklist](docs/RELEASE.md)** — first-release verification and packaging notes.
+- **[Security](docs/SECURITY.md)** — threat model, the git hardening applied to every background call, residual risks, how to report.
 - **[Contributing](CONTRIBUTING.md)** — dev setup, build/test/release workflow, code layout.
 
 Run **`task docs`** to preview the site locally with

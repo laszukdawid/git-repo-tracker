@@ -43,6 +43,12 @@ func main() {
 		openRepo(os.Args[2:])
 	case "pull":
 		pull(os.Args[2:])
+	case "branches":
+		branches(os.Args[2:])
+	case "pull-branch":
+		pullBranch(os.Args[2:])
+	case "track":
+		trackBranch(os.Args[2:])
 	case "update-all":
 		updateAll(os.Args[2:])
 	case "-v", "--version", "version":
@@ -68,6 +74,72 @@ func pull(args []string) {
 	svc.Stop()
 	if err != nil {
 		fatal("pull %s: %v", fs.Arg(0), err)
+	}
+}
+
+// branches prints one repository's branches, local plus the remote-only ones.
+func branches(args []string) {
+	fs := flag.NewFlagSet("branches", flag.ExitOnError)
+	jsonOut := fs.Bool("json", true, "print JSON output")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: branches requires a repository path")
+		os.Exit(2)
+	}
+	bl := loadService().Branches(fs.Arg(0))
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(bl); err != nil {
+			fatal("encode branches: %v", err)
+		}
+		return
+	}
+	if bl.Err != "" {
+		fatal("%s", bl.Err)
+	}
+	for _, b := range bl.Branches {
+		mark := " "
+		if b.Current {
+			mark = "*"
+		}
+		kind := "local"
+		if b.RemoteOnly {
+			kind = "remote-only"
+		}
+		fmt.Printf("%s %s\tahead=%d\tbehind=%d\t%s\t%s\n", mark, b.Name, b.Ahead, b.Behind, kind, b.Upstream)
+	}
+}
+
+// pullBranch fast-forwards one branch without touching the working tree.
+func pullBranch(args []string) {
+	fs := flag.NewFlagSet("pull-branch", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 2 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: pull-branch requires a repository path and a branch")
+		os.Exit(2)
+	}
+	svc := loadService()
+	err := svc.PullBranch(fs.Arg(0), fs.Arg(1))
+	svc.Stop()
+	if err != nil {
+		fatal("pull-branch %s %s: %s", fs.Arg(0), fs.Arg(1), monitor.BranchErrorMessage(err))
+	}
+}
+
+// trackBranch creates a local branch tracking the remote one of the same name.
+func trackBranch(args []string) {
+	fs := flag.NewFlagSet("track", flag.ExitOnError)
+	_ = fs.Parse(args)
+	if fs.NArg() != 2 {
+		fmt.Fprintln(os.Stderr, "git-repo-tracker-cli: track requires a repository path and a branch")
+		os.Exit(2)
+	}
+	svc := loadService()
+	err := svc.TrackBranch(fs.Arg(0), fs.Arg(1))
+	svc.Stop()
+	if err != nil {
+		fatal("track %s %s: %s", fs.Arg(0), fs.Arg(1), monitor.BranchErrorMessage(err))
 	}
 }
 
@@ -179,6 +251,9 @@ Usage:
   git-repo-tracker-cli details <repo-path>
   git-repo-tracker-cli open <repo-path>
   git-repo-tracker-cli pull <repo-path>
+  git-repo-tracker-cli branches <repo-path> [--json]
+  git-repo-tracker-cli pull-branch <repo-path> <branch>
+  git-repo-tracker-cli track <repo-path> <branch>
   git-repo-tracker-cli update-all [--json]
   git-repo-tracker-cli --version
   git-repo-tracker-cli --help
@@ -189,6 +264,12 @@ Commands:
   details    Print one repository's path and commit details as JSON.
   open       Run the configured clickAction for one repository.
   pull       Fast-forward one repository.
+  branches   List a repository's local branches plus the remote-only ones.
+  pull-branch
+             Fast-forward one branch. A branch that is not checked out is moved
+             without touching the working tree; git refuses anything that is not
+             a genuine fast-forward.
+  track      Create a local branch tracking the remote one of the same name.
   update-all Fetch every remote, then fast-forward every repository that is behind origin.
 `, version)
 }

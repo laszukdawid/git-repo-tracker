@@ -4,9 +4,10 @@ package ui
 
 /*
 #cgo darwin CFLAGS: -x objective-c -fobjc-arc
-#cgo darwin LDFLAGS: -framework Cocoa -framework QuartzCore
+#cgo darwin LDFLAGS: -framework Cocoa -framework QuartzCore -framework UniformTypeIdentifiers
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <dispatch/dispatch.h>
 #import <stdlib.h>
 #import <string.h>
@@ -53,7 +54,7 @@ static void GRTKillLayerAnimations(NSView *view) {
 // (the pointer is over the icon when the user clicks it). The mouse location is
 // read synchronously before the async block, and the title is copied into an
 // NSString, so we never touch click-time/Go-owned state after this returns.
-static void GRTPlacePopover(const char *title, double width, double height) {
+static void GRTPlacePopover(const char *title, double width, double height, double radius) {
 	NSString *needle = [[NSString alloc] initWithUTF8String:title];
 	NSPoint mouse = [NSEvent mouseLocation];
 	dispatch_async(dispatch_get_main_queue(), ^{
@@ -96,7 +97,7 @@ static void GRTPlacePopover(const char *title, double width, double height) {
 		NSView *cv = [win contentView];
 		if (cv != nil) {
 			[cv setWantsLayer:YES];
-			cv.layer.cornerRadius = 20.0;
+			cv.layer.cornerRadius = radius;
 			cv.layer.masksToBounds = YES;
 			GRTKillLayerAnimations(cv); // no implicit scale animation on resize
 		}
@@ -181,6 +182,40 @@ static void GRTActivateApp(void) {
 	});
 }
 
+// GRTChooseApplication shows the native open panel rooted at /Applications and
+// limited to .app bundles, for pointing at an editor the scan did not know about.
+static char *GRTChooseApplication(void) {
+	__block char *result = NULL;
+	void (^work)(void) = ^{
+		NSOpenPanel *panel = [NSOpenPanel openPanel];
+		panel.canChooseFiles = YES;
+		panel.canChooseDirectories = NO;
+		panel.allowsMultipleSelection = NO;
+		panel.treatsFilePackagesAsDirectories = NO; // an .app is picked whole
+		if (@available(macOS 11.0, *)) {
+			UTType *app = [UTType typeWithIdentifier:@"com.apple.application-bundle"];
+			if (app != nil) {
+				panel.allowedContentTypes = @[app];
+			}
+		}
+		panel.prompt = @"Choose";
+		panel.directoryURL = [NSURL fileURLWithPath:@"/Applications" isDirectory:YES];
+		[NSApp activateIgnoringOtherApps:YES];
+		if ([panel runModal] == NSModalResponseOK) {
+			NSURL *url = [[panel URLs] firstObject];
+			if (url != nil) {
+				result = strdup([[url path] UTF8String]);
+			}
+		}
+	};
+	if ([NSThread isMainThread]) {
+		work();
+	} else {
+		dispatch_sync(dispatch_get_main_queue(), work);
+	}
+	return result;
+}
+
 // GRTChooseFolder shows the native macOS folder-open panel and returns the chosen
 // directory's POSIX path as a malloc'd C string (the caller frees), or NULL if the
 // user cancelled. NSOpenPanel must run on the main thread; the Fyne tap handler that
@@ -249,7 +284,9 @@ import (
 func placePopover(title string, width, height float32) {
 	c := C.CString(title)
 	defer C.free(unsafe.Pointer(c))
-	C.GRTPlacePopover(c, C.double(width), C.double(height))
+	// The radius comes from the Go token so the window and the surfaces inside it
+	// stay on one scale — hard-coding it here is how they drifted apart before.
+	C.GRTPlacePopover(c, C.double(width), C.double(height), C.double(radiusWindow))
 	if os.Getenv("GRT_VIBRANCY") == "1" {
 		C.GRTApplyVibrancy(c)
 	}
@@ -290,6 +327,17 @@ func chooseFolderNative(initialDir string) (string, bool) {
 	res := C.GRTChooseFolder(c)
 	if res == nil {
 		return "", true
+	}
+	defer C.free(unsafe.Pointer(res))
+	return C.GoString(res), true
+}
+
+// chooseApplicationNative shows the native panel filtered to applications, so
+// the user can point at an editor discovery did not find.
+func chooseApplicationNative() (string, bool) {
+	res := C.GRTChooseApplication()
+	if res == nil {
+		return "", true // shown, and cancelled
 	}
 	defer C.free(unsafe.Pointer(res))
 	return C.GoString(res), true

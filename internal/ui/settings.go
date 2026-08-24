@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"image/color"
 	"os"
 	"strconv"
@@ -21,23 +22,24 @@ import (
 
 // Settings layout metrics (option 1e).
 const (
-	settingsWidth  = 430
+	// Deliberately the same width as the popover: the two windows are the same
+	// object seen two ways, and matching their width makes that read.
+	settingsWidth  = popoverWidth
 	settingsHeight = 560
-	cardRadius     = 11
-	cardPadX       = 15
-	cardHeadPadY   = 12
-	cardRowPadY    = 11
-	bodyPad        = 18
-	depthFieldW    = 34  // depth is a single digit (scan depth never exceeds 9)
+	cardRadius     = radiusMd
+	cardPadX       = spaceLg
+	cardHeadPadY   = spaceMd
+	cardRowPadY    = spaceMd
+	bodyPad        = spaceLg
+	depthFieldW    = 64  // one digit plus the validator icon and entry padding
 	numFieldW      = 80  // fixed width for the small min/sec number fields
 	controlW       = 220 // fixed width for the Open-with select and Theme switch
 	labelColW      = 120
 )
 
 // showSettings opens the settings window (option 1e): grouped, titled cards with
-// aligned label→control rows, a segmented theme switch, and a sticky save bar. It
-// edits which directories to scan, the refresh cadences, the click action, the
-// theme and launch-at-login; saving persists the config and triggers a rescan.
+// aligned label→control rows, a segmented theme switch, and immediate-save
+// controls. Any change updates config and refreshes live state without a final save.
 func (a *App) showSettings() {
 	// The popover floats at status-window level so it sits over other apps like a
 	// real menu-bar dropdown — which would also keep it above Settings. Dismiss it so
@@ -57,11 +59,20 @@ func (a *App) showSettings() {
 	a.settingsWin = w
 	w.SetOnClosed(func() { a.settingsWin = nil })
 	w.Resize(fyne.NewSize(settingsWidth, settingsHeight))
+	w.SetContent(a.settingsContent(w))
+	w.Show()
+	w.RequestFocus()
+	// As a menu-bar agent the app isn't auto-activated when Settings is opened from
+	// the status-bar menu, so surface the window explicitly (no-op off macOS).
+	activateApp()
+}
+
+func (a *App) settingsContent(w fyne.Window) fyne.CanvasObject {
 	tips := newTooltipLayer(a.pal)
 
-	// Work on a copy of the roots; commit only on Save. Toggles/entries mutate this
-	// slice in place through their closures.
+	// Work on a copy of the roots; toggles/entries mutate this slice in place.
 	roots := a.cfg.RootList()
+	var reloadLive func()
 
 	rootsBox := container.New(&tightVBox{gap: 0})
 	var rebuildRoots func()
@@ -74,127 +85,225 @@ func (a *App) showSettings() {
 			onRemove := func() {
 				roots = append(roots[:i], roots[i+1:]...)
 				rebuildRoots()
+				if reloadLive != nil {
+					reloadLive()
+				}
 			}
-			rootsBox.Add(a.dirRow(i, roots, tips, w, onRemove))
+			rootsBox.Add(a.dirRow(i, roots, tips, w, func() {
+				if reloadLive != nil {
+					reloadLive()
+				}
+			}, onRemove))
 		}
 		rootsBox.Refresh()
 	}
 	rebuildRoots()
 
 	addAction := newTextAction("Add directory", theme.ContentAddIcon(), theme.ColorNamePrimary,
-		a.pal.rowName, func() {
+		a.pal.accent, func() {
 			roots = append(roots, newScanRoot())
 			rebuildRoots()
+			if reloadLive != nil {
+				reloadLive()
+			}
 		})
 	dirHeader := container.NewBorder(nil, nil,
 		a.cardTitle("Scanned directories"), addAction)
 	dirCard := a.cardWithBody(a.inset(dirHeader, cardHeadPadY, cardPadX, cardHeadPadY, cardPadX), rootsBox)
-
 	// Sync & behavior.
 	fetchMin := widget.NewEntry()
+	fetchMin.Validator = positiveInt
 	fetchMin.SetText(strconv.Itoa(int(a.cfg.FetchInterval().Minutes())))
 	localSec := widget.NewEntry()
+	localSec.Validator = positiveInt
 	localSec.SetText(strconv.Itoa(int(a.cfg.LocalRefresh().Seconds())))
+	fetchMin.OnChanged = func(_ string) { reloadLive() }
+	localSec.OnChanged = func(_ string) { reloadLive() }
 
 	action, custom := a.cfg.Click()
 	customEntry := widget.NewEntry()
 	customEntry.SetPlaceHolder("e.g. code {path}")
 	customEntry.SetText(custom)
+	customEntry.OnChanged = func(_ string) { reloadLive() }
 	customRow := a.formRow("Custom command", customEntry)
 	actionSelect := widget.NewSelect(
 		[]string{config.ActionOpenFolder, config.ActionTerminal, config.ActionEditor, config.ActionCustom},
-		func(s string) {
-			if s == config.ActionCustom {
-				customRow.Show()
-			} else {
-				customRow.Hide()
-			}
-		},
+		nil,
 	)
-	actionSelect.SetSelected(action) // fires OnChanged → sets customRow visibility
-
-	// Theme: System follows the OS; Light/Dark force a fixed look. The selected
-	// index maps to config.ThemeSystem/Light/Dark.
-	themeModes := []string{config.ThemeSystem, config.ThemeLight, config.ThemeDark}
-	themeSel := indexOf(themeModes, a.cfg.ThemeMode())
-	if themeSel < 0 {
-		themeSel = 0
+	actionSelect.SetSelected(action)
+	onActionChanged := func(s string) {
+		if s == config.ActionCustom {
+			customRow.Show()
+		} else {
+			customRow.Hide()
+		}
+		reloadLive()
 	}
-	themeBar := a.segmentedBar([]string{"System", "Light", "Dark"}, themeSel, func(i int) { themeSel = i })
-
-	syncBody := a.inset(container.New(&tightVBox{gap: 13},
-		a.formRow("Fetch every", a.suffixField(fetchMin, "min")),
-		a.formRow("Local refresh", a.suffixField(localSec, "sec")),
-		a.formRow("Open with", a.fixedWidth(actionSelect, controlW)),
-		customRow,
-		a.formRow("Theme", a.fixedWidth(themeBar, controlW)),
-	), cardRowPadY+2, cardPadX, cardRowPadY+2, cardPadX)
-	syncCard := a.cardWithBody(
-		a.inset(a.cardTitle("Sync & behavior"), cardHeadPadY, cardPadX, cardHeadPadY, cardPadX),
-		syncBody)
-
-	// Launch at login (reflect the actual on-disk state, not just config).
-	startupToggle := newToggleSwitch(loginitem.Enabled(), a.pal, nil)
-	startupRow := container.NewHBox(
-		container.NewCenter(startupToggle),
-		container.NewCenter(a.mutedLabel("Start git-repo-tracker at login")),
-	)
-
-	body := container.NewVScroll(a.inset(
-		container.New(&tightVBox{gap: 16}, dirCard, syncCard, startupRow),
-		bodyPad, bodyPad+2, bodyPad, bodyPad+2))
-
-	// Sticky footer save bar.
-	save := widget.NewButtonWithIcon("Save", theme.ConfirmIcon(), func() {
+	actionSelect.OnChanged = onActionChanged
+	if action == config.ActionCustom {
+		customRow.Show()
+	} else {
+		customRow.Hide()
+	}
+	// Refresh and persist the parts of settings controlled in this pane.
+	cleanRoots := func() []config.Root {
 		cleaned := roots[:0]
 		for _, r := range roots {
 			if strings.TrimSpace(r.Path) != "" {
 				cleaned = append(cleaned, r)
 			}
 		}
-		fm, _ := strconv.Atoi(strings.TrimSpace(fetchMin.Text))
-		ls, _ := strconv.Atoi(strings.TrimSpace(localSec.Text))
-		if err := a.cfg.Save(cleaned, fm, ls, actionSelect.Selected, customEntry.Text); err != nil {
+		return cleaned
+	}
+	saveBehavior := func() error {
+		fm, fmErr := strconv.Atoi(strings.TrimSpace(fetchMin.Text))
+		if fmErr != nil || fm <= 0 {
+			return nil
+		}
+		ls, lsErr := strconv.Atoi(strings.TrimSpace(localSec.Text))
+		if lsErr != nil || ls <= 0 {
+			return nil
+		}
+		if err := customCommandError(actionSelect.Selected, customEntry.Text); err != nil {
+			return nil
+		}
+		return a.cfg.Save(cleanRoots(), fm, ls, actionSelect.Selected, customEntry.Text)
+	}
+	reloadLive = func() {
+		if err := saveBehavior(); err != nil {
 			dialog.ShowError(err, w)
 			return
 		}
-		if err := loginitem.Sync(startupToggle.on); err != nil {
-			a.logf("launch-at-login: %v", err)
-			startupToggle.on = loginitem.Enabled()
-			startupToggle.Refresh()
-			dialog.ShowError(err, w)
-			return
-		}
-		if err := a.cfg.SetLaunchAtLogin(startupToggle.on); err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-		if err := a.cfg.SetThemeMode(themeModes[themeSel]); err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-		a.applyTheme()          // install the chosen variant as the Fyne theme
-		a.buildPopoverContent() // repaint the popover's custom colours for it
 		a.mgr.Refresh()
 		a.refresh()
-		w.Close()
+	}
+
+	// Theme family and mode apply instantly and are visible without Save.
+	themeModes := []string{config.ThemeSystem, config.ThemeLight, config.ThemeDark}
+	palettes := []string{config.PaletteSlate, config.PaletteInk, config.PaletteSignal}
+	themeSel := indexOf(themeModes, a.cfg.ThemeMode())
+	if themeSel < 0 {
+		themeSel = 0
+	}
+	paletteSel := indexOf(palettes, a.cfg.PaletteName())
+	if paletteSel < 0 {
+		paletteSel = 0
+	}
+	applyThemeChoice := func() {
+		a.applyTheme()
+		a.buildPopoverContent()
+		a.refresh()
+		tips.stopDelay()
+		w.SetContent(a.settingsContent(w))
+	}
+	onSetThemeMode := func(i int) {
+		if err := a.cfg.SetThemeMode(themeModes[i]); err != nil {
+			dialog.ShowError(err, w)
+			themeSel = indexOf(themeModes, a.cfg.ThemeMode())
+			if themeSel < 0 {
+				themeSel = 0
+			}
+			return
+		}
+		applyThemeChoice()
+		reloadLive()
+	}
+	onSetPalette := func(i int) {
+		if err := a.cfg.SetPalette(palettes[i]); err != nil {
+			dialog.ShowError(err, w)
+			paletteSel = indexOf(palettes, a.cfg.PaletteName())
+			if paletteSel < 0 {
+				paletteSel = 0
+			}
+			return
+		}
+		applyThemeChoice()
+		reloadLive()
+	}
+
+	// Theme: System follows the OS; Light/Dark force a fixed look. The selected
+	// index maps to config.ThemeSystem/Light/Dark.
+	themeBar := a.segmentedBar([]string{"System", "Light", "Dark"}, themeSel, onSetThemeMode)
+
+	// Colour family. Three families times the light/dark variant above give the
+	// six themes; the family decides what colour *means* in the list, not just
+	// which hue is used. See internal/ui/palettes.go.
+	paletteBar := a.segmentedBar([]string{"Slate", "Ink", "Signal"}, paletteSel, onSetPalette)
+
+	syncBody := a.inset(container.New(&tightVBox{gap: spaceMd},
+		a.formRow("Fetch every", a.suffixField(fetchMin, "min")),
+		a.formRow("Local refresh", a.suffixField(localSec, "sec")),
+		a.formRow("Open with", a.fixedWidth(actionSelect, controlW)),
+		customRow,
+		a.formRow("Theme", a.fixedWidth(themeBar, controlW)),
+		a.formRow("Colours", a.fixedWidth(paletteBar, controlW)),
+	), cardRowPadY, cardPadX, cardRowPadY, cardPadX)
+	syncCard := a.cardWithBody(
+		a.inset(a.cardTitle("Sync & behavior"), cardHeadPadY, cardPadX, cardHeadPadY, cardPadX),
+		syncBody)
+
+	// Launch at login (reflect the actual on-disk state, not just config).
+	var startupToggle *toggleSwitch
+	startupToggle = newToggleSwitch(loginitem.Enabled(), a.pal, func(on bool) {
+		if err := loginitem.Sync(on); err != nil {
+			dialog.ShowError(err, w)
+			startupToggle.on = loginitem.Enabled()
+			startupToggle.Refresh()
+			return
+		}
+		if err := a.cfg.SetLaunchAtLogin(on); err != nil {
+			dialog.ShowError(err, w)
+			startupToggle.on = !on
+			startupToggle.Refresh()
+			return
+		}
 	})
-	save.Importance = widget.HighImportance
-	cancel := widget.NewButton("Cancel", w.Close)
-	cancel.Importance = widget.LowImportance
+	startupRow := container.NewHBox(
+		container.NewCenter(startupToggle),
+		container.NewCenter(a.mutedLabel("Start git-repo-tracker at login")),
+	)
+
+	body := container.NewVScroll(a.inset(
+		container.New(&tightVBox{gap: spaceLg}, dirCard, syncCard, startupRow),
+		bodyPad, bodyPad, bodyPad, bodyPad))
+
+	// Settings updates are live; footer closes the pane only.
+	done := widget.NewButton("Done", w.Close)
+	done.Importance = widget.HighImportance
 
 	footerBar := container.NewStack(
 		a.rect(a.pal.footerBg, 0),
-		a.inset(container.NewHBox(layout.NewSpacer(), cancel, save), 10, 16, 10, 16),
+		a.inset(container.NewHBox(layout.NewSpacer(), done), spaceSm, spaceLg, spaceSm, spaceLg),
 	)
 	footer := container.New(&tightVBox{gap: 0}, a.hairline(), footerBar)
 
-	w.SetContent(tips.wrap(container.NewBorder(nil, footer, nil, nil, body)))
-	w.Show()
-	w.RequestFocus()
-	// As a menu-bar agent the app isn't auto-activated when Settings is opened from
-	// the status-bar menu, so surface the window explicitly (no-op off macOS).
-	activateApp()
+	return tips.wrap(container.NewBorder(nil, footer, nil, nil, body))
+}
+
+// positiveInt is the Entry validator for the interval fields.
+func positiveInt(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return fmt.Errorf("enter a whole number greater than 0")
+	}
+	return nil
+}
+
+// nonNegativeInt is the Entry validator for the scan-depth field (0 = unlimited).
+func nonNegativeInt(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return fmt.Errorf("enter 0 (unlimited) or a positive whole number")
+	}
+	return nil
+}
+
+// customCommandError rejects saving the "custom" click action with nothing to run.
+func customCommandError(action, custom string) error {
+	if action == config.ActionCustom && strings.TrimSpace(custom) == "" {
+		return fmt.Errorf("Custom command: enter a command, e.g. code {path}")
+	}
+	return nil
 }
 
 func newScanRoot() config.Root {
@@ -207,51 +316,93 @@ func newScanRoot() config.Root {
 // inline text to keep the row uncluttered. The path/depth/fetch closures mutate
 // roots[i] in place (shared backing array); onRemove — bound to this index by the
 // caller — drops the entry and rebuilds the list.
-func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Window, onRemove func()) fyne.CanvasObject {
+func (a *App) dirRow(i int, roots []config.Root, tips *tooltipLayer, w fyne.Window, onChange func(), onRemove func()) fyne.CanvasObject {
 	path := widget.NewEntry()
+	// A path is one horizontal value. Fyne's default scrolls both axes and draws
+	// its horizontal scrollbar over the text when the value is wider than the field.
+	path.Wrapping = fyne.TextWrapOff
+	path.Scroll = fyne.ScrollHorizontalOnly
 	// The folder-browse button sits inside the entry (its ActionItem, like a password
 	// revealer) so path + browse read as one field. It MUST be assigned before the
 	// SetText/SetPlaceHolder calls below, which build the entry's renderer.
-	path.ActionItem = newTipButton(tips, theme.FolderOpenIcon(), "Browse for a folder", func() {
+	path.ActionItem = newHeaderButton(tips, a.pal, theme.FolderOpenIcon(), "Browse for a folder", func() {
 		a.browseForFolder(w, config.ExpandPath(path.Text), func(chosen string) {
 			fyne.Do(func() { path.SetText(tildeAbbrev(chosen)) }) // OnChanged updates roots[i]
 		})
 	})
 	path.SetPlaceHolder("~/projects")
 	path.SetText(roots[i].Path)
-	path.OnChanged = func(s string) { roots[i].Path = s }
-
+	path.OnChanged = func(s string) {
+		roots[i].Path = s
+		if onChange != nil {
+			onChange()
+		}
+	}
 	depth := widget.NewEntry()
+	depth.Validator = nonNegativeInt
 	depth.SetText(strconv.Itoa(roots[i].Depth))
 	depth.OnChanged = func(s string) {
 		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 0 {
 			roots[i].Depth = n
 		}
+		if onChange != nil {
+			onChange()
+		}
 	}
 	depthCell := container.New(layout.NewGridWrapLayout(fyne.NewSize(depthFieldW, depth.MinSize().Height)), depth)
 	depthField := newTipHover(tips, "Folder scan depth", depthCell) // replaces the inline "depth" label
 
-	fetch := newToggleSwitch(roots[i].AutoFetch, a.pal, func(b bool) { roots[i].AutoFetch = b })
+	fetch := newToggleSwitch(roots[i].AutoFetch, a.pal, func(b bool) {
+		roots[i].AutoFetch = b
+		if onChange != nil {
+			onChange()
+		}
+	})
 	fetch.tips, fetch.tip = tips, "Auto-fetch this directory"
-	remove := newTipButton(tips, theme.DeleteIcon(), "Remove this directory", onRemove)
+	remove := newHeaderButton(tips, a.pal, theme.DeleteIcon(), "Remove this directory", onRemove)
 
 	// A little air between the depth field and the toggle; the delete button sits
 	// right next to the toggle (no wide gap).
-	right := container.NewHBox(
-		container.NewCenter(depthField),
-		hspace(12),
-		container.NewCenter(fetch),
-		remove,
-	)
-	row := container.NewBorder(nil, nil, nil, right, path)
+	right := container.New(&directoryActionsLayout{}, depthField, fetch, remove)
+	pathField := container.NewThemeOverride(path, pathEntryTheme(path.Theme()))
+	row := container.NewBorder(nil, nil, nil, right, pathField)
 	return a.inset(row, cardRowPadY, cardPadX, cardRowPadY, cardPadX)
 }
 
-// hspace is a fixed-width, invisible spacer for widening gaps within an HBox.
-func hspace(w float32) fyne.CanvasObject {
-	r := canvas.NewRectangle(color.Transparent)
-	r.SetMinSize(fyne.NewSize(w, 0))
-	return r
+type directoryActionsLayout struct{}
+
+func (directoryActionsLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	gaps := []float32{spaceMd, actionSiblingGap}
+	x := float32(0)
+	for i, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		object.Move(fyne.NewPos(x, (size.Height-itemSize.Height)/2))
+		object.Resize(itemSize)
+		x += itemSize.Width
+		if i < len(gaps) {
+			x += gaps[i]
+		}
+	}
+}
+
+func (directoryActionsLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	gaps := []float32{spaceMd, actionSiblingGap}
+	var width, height float32
+	for i, object := range objects {
+		if !object.Visible() {
+			continue
+		}
+		itemSize := object.MinSize()
+		width += itemSize.Width
+		height = max(height, itemSize.Height)
+		if i < len(gaps) {
+			width += gaps[i]
+		}
+	}
+	return fyne.NewSize(width, height)
 }
 
 // browseForFolder opens a folder picker starting at startDir and calls onPick with
@@ -270,6 +421,24 @@ func (a *App) browseForFolder(w fyne.Window, startDir string, onPick func(string
 		}
 		onPick(u.Path())
 	}, w)
+}
+
+// browseForApplication opens the OS picker for an application bundle, falling
+// back to Fyne's in-app file dialog where there is no native panel.
+func (a *App) browseForApplication(onPick func(string)) {
+	if chosen, native := chooseApplicationNative(); native {
+		if chosen != "" {
+			onPick(chosen)
+		}
+		return
+	}
+	dialog.ShowFileOpen(func(rc fyne.URIReadCloser, err error) {
+		if err != nil || rc == nil {
+			return
+		}
+		defer rc.Close()
+		onPick(rc.URI().Path())
+	}, a.win)
 }
 
 // tildeAbbrev rewrites an absolute path under the user's home directory back to a
@@ -309,9 +478,9 @@ func (a *App) segmentedBar(labels []string, selected int, onSelect func(int)) fy
 		objs[i] = chips[i]
 	}
 	grid := container.New(layout.NewGridLayout(len(chips)), objs...)
-	track := a.rect(a.pal.fieldBg, 8)
+	track := a.rect(a.pal.fieldBg, radiusSm)
 	track.StrokeColor = a.pal.fieldBorder
-	track.StrokeWidth = 1
+	track.StrokeWidth = hairlineW
 	return container.NewStack(track, container.NewPadded(grid))
 }
 
@@ -335,7 +504,7 @@ func (a *App) fixedWidth(o fyne.CanvasObject, w float32) fyne.CanvasObject {
 // left-aligned so a two-digit value doesn't stretch a field across the whole row.
 func (a *App) suffixField(entry *widget.Entry, suffix string) fyne.CanvasObject {
 	s := canvas.NewText(suffix, a.pal.faint)
-	s.TextSize = 12
+	s.TextSize = textSm
 	field := container.New(layout.NewGridWrapLayout(fyne.NewSize(numFieldW, entry.MinSize().Height)), entry)
 	return container.NewHBox(field, container.NewCenter(s))
 }
@@ -358,7 +527,7 @@ func (a *App) cardTitle(text string) fyne.CanvasObject {
 // mutedLabel is a small muted caption drawn as canvas text (13px).
 func (a *App) mutedLabel(text string) fyne.CanvasObject {
 	t := canvas.NewText(text, a.pal.muted)
-	t.TextSize = 13
+	t.TextSize = textMd
 	return t
 }
 
@@ -421,7 +590,7 @@ type textAction struct {
 	iconName fyne.ThemeColorName
 	col      color.Color
 	onTap    func()
-	hovered  bool
+	state    interactionState
 }
 
 func newTextAction(label string, icon fyne.Resource, iconName fyne.ThemeColorName, col color.Color, onTap func()) *textAction {
@@ -437,56 +606,85 @@ func (t *textAction) Tapped(*fyne.PointEvent) {
 }
 func (t *textAction) MouseIn(*desktop.MouseEvent)    { t.setHovered(true) }
 func (t *textAction) MouseMoved(*desktop.MouseEvent) {}
-func (t *textAction) MouseOut()                      { t.setHovered(false) }
+func (t *textAction) MouseOut() {
+	t.setHovered(false)
+	t.setPressed(false)
+}
+func (t *textAction) MouseDown(*desktop.MouseEvent) { t.setPressed(true) }
+func (t *textAction) MouseUp(*desktop.MouseEvent)   { t.setPressed(false) }
 func (t *textAction) setHovered(h bool) {
-	if t.hovered != h {
-		t.hovered = h
+	if t.state.setHovered(h) {
 		t.Refresh()
 	}
 }
 
+func (t *textAction) setPressed(v bool) {
+	if t.state.setPressed(v) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) FocusGained() {
+	if t.state.setFocused(true) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) FocusLost() {
+	if t.state.setFocused(false) {
+		t.Refresh()
+	}
+}
+
+func (t *textAction) TypedRune(rune) {}
+
+func (t *textAction) TypedKey(ev *fyne.KeyEvent) {
+	if ev.Name == fyne.KeySpace || ev.Name == fyne.KeyReturn || ev.Name == fyne.KeyEnter {
+		keyboardActivate(&t.state, t.Refresh, func() { t.Tapped(nil) })
+	}
+}
+
 func (t *textAction) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(color.Transparent)
+	bg.CornerRadius = radiusSm
 	txt := canvas.NewText(t.label, t.col)
-	txt.TextSize = 12.5
+	txt.TextSize = textSm
 	txt.TextStyle = fyne.TextStyle{Bold: true}
-	objs := []fyne.CanvasObject{txt}
+	objs := []fyne.CanvasObject{bg, txt}
 	var img *canvas.Image
 	if t.icon != nil {
 		img = canvas.NewImageFromResource(theme.NewColoredResource(t.icon, t.iconName))
 		img.FillMode = canvas.ImageFillContain
 		objs = append(objs, img)
 	}
-	return &textActionRenderer{t: t, txt: txt, img: img, objects: objs}
+	return &textActionRenderer{t: t, bg: bg, txt: txt, img: img, objects: objs}
 }
 
 type textActionRenderer struct {
 	t       *textAction
+	bg      *canvas.Rectangle
 	txt     *canvas.Text
 	img     *canvas.Image
 	objects []fyne.CanvasObject
 }
 
-const textActionIcon = 14
-
 func (r *textActionRenderer) MinSize() fyne.Size {
 	ts := r.txt.MinSize()
-	w := ts.Width
-	h := ts.Height
+	w := ts.Width + actionLabelPad*2
+	h := float32(actionBox)
 	if r.img != nil {
-		w += textActionIcon + 5
-		if textActionIcon > h {
-			h = textActionIcon
-		}
+		w += actionIcon + actionLabelGap
 	}
-	return fyne.NewSize(w+4, h+4)
+	return fyne.NewSize(w, h)
 }
 
 func (r *textActionRenderer) Layout(size fyne.Size) {
-	x := float32(2)
+	r.bg.Resize(size)
+	x := float32(actionLabelPad)
 	if r.img != nil {
-		r.img.Move(fyne.NewPos(x, (size.Height-textActionIcon)/2))
-		r.img.Resize(fyne.NewSize(textActionIcon, textActionIcon))
-		x += textActionIcon + 5
+		r.img.Move(fyne.NewPos(x, (size.Height-actionIcon)/2))
+		r.img.Resize(fyne.NewSize(actionIcon, actionIcon))
+		x += actionIcon + actionLabelGap
 	}
 	ts := r.txt.MinSize()
 	r.txt.Move(fyne.NewPos(x, (size.Height-ts.Height)/2))
@@ -494,6 +692,24 @@ func (r *textActionRenderer) Layout(size fyne.Size) {
 }
 
 func (r *textActionRenderer) Refresh() {
+	switch {
+	case r.t.state.pressed:
+		r.bg.FillColor = theme.Color(theme.ColorNameSelection)
+		r.bg.StrokeColor = theme.Color(theme.ColorNamePrimary)
+		r.bg.StrokeWidth = 2
+	case r.t.state.active():
+		r.bg.FillColor = theme.Color(theme.ColorNameHover)
+		if r.t.state.focused {
+			r.bg.StrokeColor = theme.Color(theme.ColorNamePrimary)
+			r.bg.StrokeWidth = hairlineW
+		} else {
+			r.bg.StrokeWidth = 0
+		}
+	default:
+		r.bg.FillColor = color.Transparent
+		r.bg.StrokeWidth = 0
+	}
+	r.bg.Refresh()
 	r.txt.Color = r.t.col
 	r.txt.Refresh()
 	if r.img != nil {

@@ -15,6 +15,8 @@ import (
 	"github.com/laszukdawid/git-repo-tracker/internal/config"
 )
 
+const managedWorktreeDir = ".worktrees"
+
 // Discover walks every root concurrently and returns the absolute paths of all
 // git repositories found, deduplicated and sorted. A directory containing a
 // .git entry is recorded and not descended into, so nested repos / submodules
@@ -79,6 +81,12 @@ func walkRoot(ctx context.Context, root config.Root, ignore map[string]bool) []s
 		}
 		if !d.IsDir() {
 			return nil
+		}
+		// Branch editor actions create linked checkouts here. They belong to the
+		// repository already in the list and must not reappear as separate repos.
+		// An explicitly configured .worktrees root is still honoured.
+		if path != base && d.Name() == managedWorktreeDir {
+			return filepath.SkipDir
 		}
 		// Prune ignored directories first, so an ignored dir that happens to be a
 		// repo (e.g. a clone under node_modules/vendor) is skipped, not reported.

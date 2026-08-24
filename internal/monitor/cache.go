@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// cacheVersion guards the on-disk shape. Bump it ONLY for an incompatible
+// change — a renamed or retyped field. Do not bump it to add a field: loadCache
+// discards the entire document on a mismatch, so a bump blanks every repo's
+// status on upgrade and leaves the tray empty until a full pass completes.
+// Additive fields are compatible in both directions and rely on zero values.
 const cacheVersion = 1
 
 // cacheDoc is the on-disk representation of the registry. Persisting last-known

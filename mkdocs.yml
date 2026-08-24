@@ -36,6 +36,7 @@ nav:
   - Architecture: ARCHITECTURE.md
   - GNOME Extension: GNOME_EXTENSION.md
   - Release: RELEASE.md
+  - Security: SECURITY.md
 
 markdown_extensions:
   - admonition

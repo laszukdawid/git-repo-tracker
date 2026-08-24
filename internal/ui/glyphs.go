@@ -12,12 +12,17 @@ import (
 type glyphKind int
 
 const (
-	glyphBehind       glyphKind = iota // down-arrow (commits to pull)
+	glyphBehind       glyphKind = iota // down-arrow: commits to pull
 	glyphSynced                        // check (even with origin)
 	glyphDirty                         // filled dot (uncommitted changes)
 	glyphChevron                       // ▾ disclosure, group expanded
 	glyphChevronRight                  // ▸ disclosure, group collapsed
 	glyphError                         // "!" on a filled disc (fetch/status error)
+	glyphRing                          // hollow dot — a quieter "dirty"
+	glyphNone                          // nothing at all; some palettes say "clean" by absence
+	glyphAhead                         // up-arrow: commits to push
+	glyphDiverged                      // down and up together: both, and they have parted
+	glyphConflict                      // warning triangle: mid-merge/rebase, or conflicts
 )
 
 // glyph is a tiny single-colour status/disclosure mark drawn from canvas
@@ -50,6 +55,23 @@ func (g *glyph) segs() [][4]float32 {
 	switch g.kind {
 	case glyphBehind:
 		return [][4]float32{{12, 4, 12, 17}, {6, 11, 12, 17}, {12, 17, 18, 11}}
+	case glyphAhead:
+		// The same arrow turned over, so pull and push read as opposites at a
+		// glance rather than as two things to memorise.
+		return [][4]float32{{12, 20, 12, 7}, {6, 13, 12, 7}, {12, 7, 18, 13}}
+	case glyphDiverged:
+		// Two half-width arrows side by side: down on the left, up on the right.
+		return [][4]float32{
+			{7, 3, 7, 14}, {3, 10.5, 7, 14}, {7, 14, 11, 10.5},
+			{17, 21, 17, 10}, {13, 13.5, 17, 10}, {17, 10, 21, 13.5},
+		}
+	case glyphConflict:
+		// A hollow triangle with a stem — the universal "stop and look at this",
+		// and a different silhouette from the error disc so the two never blur.
+		return [][4]float32{
+			{12, 3, 22, 20}, {22, 20, 2, 20}, {2, 20, 12, 3},
+			{12, 9, 12, 14},
+		}
 	case glyphSynced:
 		return [][4]float32{{5, 13, 9, 17}, {9, 17, 19, 6}}
 	case glyphChevron:
@@ -64,8 +86,17 @@ func (g *glyph) segs() [][4]float32 {
 func (g *glyph) CreateRenderer() fyne.WidgetRenderer {
 	r := &glyphRenderer{g: g}
 	switch g.kind {
+	case glyphNone:
+		// Deliberately empty: a palette can express "nothing to do here" by
+		// drawing nothing, which is quieter than any colour could be.
 	case glyphDirty:
 		r.dot = canvas.NewCircle(g.col)
+		r.objects = []fyne.CanvasObject{r.dot}
+	case glyphRing:
+		r.dot = canvas.NewCircle(color.Transparent)
+		r.dot.StrokeColor = g.col
+		r.dot.StrokeWidth = 2
+		r.ring = true
 		r.objects = []fyne.CanvasObject{r.dot}
 	case glyphError:
 		// A red disc with a white exclamation, echoing the tray's error badge.
@@ -95,6 +126,7 @@ type glyphRenderer struct {
 	disc    *canvas.Circle // error badge background
 	exBar   *canvas.Line   // error exclamation stem
 	exDot   *canvas.Circle // error exclamation dot
+	ring    bool           // dot is drawn as an outline rather than a fill
 	lines   []lineSeg
 	objects []fyne.CanvasObject
 }
@@ -116,6 +148,11 @@ func (r *glyphRenderer) Layout(size fyne.Size) {
 	if r.dot != nil {
 		r.dot.Move(fyne.NewPos(offX, offY))
 		r.dot.Resize(fyne.NewSize(side, side))
+		if r.ring {
+			// Proportional to the glyph box so the ring reads the same weight as
+			// the filled dot it replaces.
+			r.dot.StrokeWidth = side * 0.22
+		}
 		return
 	}
 	if r.disc != nil {
@@ -139,7 +176,12 @@ func (r *glyphRenderer) Layout(size fyne.Size) {
 
 func (r *glyphRenderer) Refresh() {
 	if r.dot != nil {
-		r.dot.FillColor = r.g.col
+		if r.ring {
+			r.dot.FillColor = color.Transparent
+			r.dot.StrokeColor = r.g.col
+		} else {
+			r.dot.FillColor = r.g.col
+		}
 		r.dot.Refresh()
 		return
 	}

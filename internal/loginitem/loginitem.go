@@ -150,15 +150,12 @@ func renderPlist(args []string) string {
 }
 
 // renderDesktop builds an XDG autostart entry. Exec needs a single command
-// string; we quote each argument defensively.
+// string; every argument is quoted per the Desktop Entry spec so a path with
+// spaces, quotes, `$`, backslashes or `%` field codes round-trips verbatim.
 func renderDesktop(args []string) string {
 	quoted := make([]string, len(args))
 	for i, a := range args {
-		if strings.ContainsAny(a, " \t\"") {
-			quoted[i] = `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
-		} else {
-			quoted[i] = a
-		}
+		quoted[i] = quoteExecArg(a)
 	}
 	var b strings.Builder
 	b.WriteString("[Desktop Entry]\n")
@@ -168,6 +165,19 @@ func renderDesktop(args []string) string {
 	b.WriteString("Terminal=false\n")
 	b.WriteString("X-GNOME-Autostart-enabled=true\n")
 	return b.String()
+}
+
+// quoteExecArg quotes one Exec= argument. The Desktop Entry spec reserves `%`
+// as a field-code prefix (escaped as `%%`, applied even outside quotes) and,
+// inside double quotes, requires `"`, “ ` “, `$` and `\` to be backslash-escaped.
+// Plain alphanumeric/path arguments are left bare for readability.
+func quoteExecArg(a string) string {
+	a = strings.ReplaceAll(a, "%", "%%")
+	if !strings.ContainsAny(a, " \t\n\"'`$\\<>~|&;*?#()") {
+		return a
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`)
+	return `"` + r.Replace(a) + `"`
 }
 
 func xmlEscape(s string) string {
