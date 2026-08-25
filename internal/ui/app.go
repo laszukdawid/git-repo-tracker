@@ -88,16 +88,16 @@ type App struct {
 	footerRight  *canvas.Text
 	tips         *tooltipLayer
 
-	all          []monitor.RepoState // latest full snapshot
-	visible      []popoverItem       // grouped headers + repo rows currently shown
-	query        string
-	filter       filterMode
-	sort         sortMode
-	groupCount   int             // distinct scan-root sections currently shown (footer "N roots")
-	collapsedRow  float32        // memoised height of a collapsed repo row (title on one line)
-	collapsedRow2 float32        // memoised height of a collapsed repo row (branch wrapped below the name)
-	groupRowH     float32        // memoised height of a group-header row
-	collapsedGrp map[string]bool // scan roots the user has folded closed
+	all           []monitor.RepoState // latest full snapshot
+	visible       []popoverItem       // grouped headers + repo rows currently shown
+	query         string
+	filter        filterMode
+	sort          sortMode
+	groupCount    int             // distinct scan-root sections currently shown (footer "N roots")
+	collapsedRow  float32         // memoised height of a collapsed repo row (title on one line)
+	collapsedRow2 float32         // memoised height of a collapsed repo row (branch wrapped below the name)
+	groupRowH     float32         // memoised height of a group-header row
+	collapsedGrp  map[string]bool // scan roots the user has folded closed
 
 	popVisible    bool                        // whether the popover is currently shown (for tray toggle)
 	lastResign    time.Time                   // when the popover last auto-hid on focus loss
@@ -371,7 +371,7 @@ func (a *App) openConfigInEditor() {
 	default:
 		cmd = exec.Command("xdg-open", path)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := actions.Start(cmd); err != nil {
 		a.logf("open config failed: %v", err)
 	}
 }

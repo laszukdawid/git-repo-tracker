@@ -73,7 +73,8 @@ type Manager struct {
 	repos map[string]*RepoState
 	// Different repositories may pull concurrently, but overlapping refresh loops
 	// must never run two mutating git processes in the same working tree.
-	pullLocks sync.Map // map[string]*sync.Mutex
+	pullLocksMu sync.Mutex
+	pullLocks   map[string]*pullLock
 
 	notifyC chan struct{}
 	trigger chan struct{}
@@ -95,14 +96,15 @@ func New(cfg *config.Config, onChange func(), logf func(string, ...any)) *Manage
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		cfg:      cfg,
-		onChange: onChange,
-		log:      logf,
-		repos:    loadCache(),
-		notifyC:  make(chan struct{}, 1),
-		trigger:  make(chan struct{}, 1),
-		ctx:      ctx,
-		cancel:   cancel,
+		cfg:       cfg,
+		onChange:  onChange,
+		log:       logf,
+		repos:     loadCache(),
+		pullLocks: make(map[string]*pullLock),
+		notifyC:   make(chan struct{}, 1),
+		trigger:   make(chan struct{}, 1),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
@@ -243,10 +245,8 @@ func (m *Manager) Pull(path string) error {
 }
 
 func (m *Manager) pull(path string, recheckBehind bool) error {
-	lockValue, _ := m.pullLocks.LoadOrStore(path, &sync.Mutex{})
-	lock := lockValue.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	unlock := m.lockPull(path)
+	defer unlock()
 	if recheckBehind {
 		m.refreshOne(path)
 		if !m.canAutoPull(path) {
@@ -262,6 +262,34 @@ func (m *Manager) pull(path string, recheckBehind bool) error {
 	m.refreshOne(path)
 	m.notify()
 	return nil
+}
+
+type pullLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (m *Manager) lockPull(path string) func() {
+	m.pullLocksMu.Lock()
+	lock := m.pullLocks[path]
+	if lock == nil {
+		lock = &pullLock{}
+		m.pullLocks[path] = lock
+	}
+	lock.refs++
+	m.pullLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+
+		m.pullLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(m.pullLocks, path)
+		}
+		m.pullLocksMu.Unlock()
+	}
 }
 
 // Details bundles a repo's path with the latest local and origin commit info,
