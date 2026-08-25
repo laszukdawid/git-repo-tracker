@@ -20,7 +20,27 @@ func Run(action, custom, path string) error {
 		return err
 	}
 	cmd.Env = git.Env()
-	return cmd.Start()
+	return Start(cmd)
+}
+
+// Start launches cmd and reaps it asynchronously after it exits. GUI launcher
+// commands must not block the Fyne main thread, but every started child still
+// needs a matching Wait so it cannot remain as a zombie process.
+func Start(cmd *exec.Cmd) error {
+	return startAndReap(cmd, nil)
+}
+
+func startAndReap(cmd *exec.Cmd, onExit func(error)) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		err := cmd.Wait()
+		if onExit != nil {
+			onExit(err)
+		}
+	}()
+	return nil
 }
 
 func Command(action, custom, path string) (*exec.Cmd, error) {

@@ -122,3 +122,16 @@ Because this app uses both:
 - custom palette colors baked into canvas objects
 
 When changing appearance behavior, keep those two paths synchronized. If the app follows system theme changes, both the Fyne theme and the custom palette must resolve to the same concrete light/dark variant.
+
+## Subprocesses
+
+### Why can't a GUI action stop at `exec.Cmd.Start`?
+
+`Start` returns before the child exits, but the child still has to be reaped. A
+launcher that never calls `Wait` can leave completed children as zombie processes
+until the tracker exits.
+
+Use `actions.Start` for fire-and-forget UI commands. It waits in a background
+goroutine, keeping the Fyne main thread responsive while releasing the process
+resources after exit. Git operations remain synchronous inside monitor workers and
+already use `CombinedOutput`, which waits for the command.
